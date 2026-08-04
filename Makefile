@@ -8,7 +8,7 @@ export PYTHONPATH := $(CORE)
 
 help:
 	@echo "make install    - install python dependencies (no ROS, no GPU)"
-	@echo "make test       - unit tests (154)"
+	@echo "make test       - unit tests (171)"
 	@echo "make lint       - ruff"
 	@echo "make dryrun     - E2E dry-run, stub + real CPU backends (contract gate)"
 	@echo "make evaluate   - detection and pose accuracy vs tolerances"

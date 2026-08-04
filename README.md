@@ -83,7 +83,7 @@ ros2_ws/src/
 ```
 
 `roboworld_core`는 `rclpy`를 import하지 않는다. 그래서 ROS 미설치 환경에서도
-**154개 유닛 테스트와 E2E dry-run이 통과**하며, 4개 에이전트가 하드웨어를 기다리지 않고
+**171개 유닛 테스트와 E2E dry-run이 통과**하며, 4개 에이전트가 하드웨어를 기다리지 않고
 병렬 개발할 수 있다 (claude.md §2).
 
 ---
@@ -94,7 +94,7 @@ ros2_ws/src/
 
 ```bash
 make install     # 의존성 설치
-make test        # 유닛 테스트 154개
+make test        # 유닛 테스트 171개
 make dryrun      # E2E dry-run — 계약 검증 게이트
 make evaluate    # 검출률·포즈 정확도 (허용치 게이트)
 make dataset     # 목업 RGB-D 데이터셋 생성
