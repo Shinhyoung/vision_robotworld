@@ -144,6 +144,51 @@ def pose_overlay(
     return np.clip(out, 0, 255).astype(np.uint8), coverage
 
 
+#: The 12 edges of a box, as index pairs into the corner order
+#: :meth:`StationRoi.corners` produces (x outer, y middle, z inner).
+_BOX_EDGES = (
+    (0, 1), (0, 2), (1, 3), (2, 3),  # -x face
+    (4, 5), (4, 6), (5, 7), (6, 7),  # +x face
+    (0, 4), (1, 5), (2, 6), (3, 7),  # connecting
+)
+
+
+def draw_station_roi(
+    color: np.ndarray,
+    roi,
+    intrinsics,
+    line_color: tuple[int, int, int] = (90, 190, 255),
+) -> np.ndarray:
+    """Draw the station volume's wireframe onto the image.
+
+    The ROI decides which part gets picked, so an operator has to be able to see
+    where it is; aligning the camera against an invisible box is guesswork.
+    Drawn as a projected wireframe rather than a flat rectangle because it is a
+    volume -- the near and far faces landing in different places is the point.
+    """
+    out = np.asarray(color, dtype=np.uint8).copy()
+    height, width = out.shape[:2]
+    corners = np.asarray(roi.corners(), dtype=np.float64)
+
+    z = corners[:, 2]
+    # A corner behind the camera has no image position; drop any edge touching
+    # one rather than projecting it to a mirrored point somewhere on screen.
+    in_front = z > 1e-6
+    safe_z = np.where(in_front, z, 1.0)
+    u = corners[:, 0] * intrinsics.fx / safe_z + intrinsics.cx - 0.5
+    v = corners[:, 1] * intrinsics.fy / safe_z + intrinsics.cy - 0.5
+
+    for start, end in _BOX_EDGES:
+        if not (in_front[start] and in_front[end]):
+            continue
+        steps = int(max(abs(u[end] - u[start]), abs(v[end] - v[start]))) + 1
+        cols = np.round(np.linspace(u[start], u[end], steps)).astype(int)
+        rows = np.round(np.linspace(v[start], v[end], steps)).astype(int)
+        visible = (rows >= 0) & (rows < height) & (cols >= 0) & (cols < width)
+        out[rows[visible], cols[visible]] = line_color
+    return out
+
+
 def hstack_panels(
     images: list[np.ndarray],
     gap: int = 8,

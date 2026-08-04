@@ -46,46 +46,48 @@
 
 ## 3. 지금 바로 할 작업 (중단된 지점)
 
-### 스테이션 ROI 구현 — 설계까지 합의 완료, 구현만 남음
+### 스테이션 ROI — ✅ 구현 완료 (2026-08-05)
 
-**왜 필요한가**: 화면에 부품이 여러 개면 스테이션에 없는 부품을 골라 포즈를 발행할
-수 있다. 실측으로 확인함 — 간격 200 mm에서 **후속 부품의 포즈(y=+0.195 m)를 발행**했다.
+간격 200 mm에서 **후속 부품의 포즈(y=+0.195 m)를 발행**하던 문제를 막는 게이트다.
+후보(`Candidate`)의 **중심이 카메라 좌표계 기준 상자 안**에 있어야 선택 대상이 되고,
+상자 밖 부품만 있으면 `STATUS_NO_POSE`(= 아직 스테이션에 도착 안 함)를 낸다.
 
-| 간격 | 결과 |
+| 파일 | 내용 |
 |---|---|
-| 80 mm | 두 부품이 하나로 병합 → 전체 거부 (스테이션 부품 손실) |
-| 120·160 mm | 스테이션 부품 정상 선택 |
-| **200 mm** | **후속 부품 오선택** ❌ |
-| 500 mm | 후속 부품이 잘려 보여 치수 불일치로 자동 배제 → 정상 |
-
-500 mm 간격에서는 현재 코드로도 동작하지만 우연에 기대는 것이라 ROI를 안전장치로 넣는다.
-
-**합의된 설계 — 3D 볼륨 (이미지 사각형 아님)**
+| `roboworld_core/segmentation.py` | `StationRoi`, `station_roi_from_config`, `segment_part(station_roi=...)` |
+| `roboworld_core/pose/__init__.py`·`inspection/__init__.py` | **양쪽 팩토리**에 배선 (§8 함정) |
+| `roboworld_bringup/config/pose.yaml` | `pose.segmentation.station_roi` |
+| `roboworld_core/viz.py` | `draw_station_roi` — 상자 와이어프레임 투영 |
+| `tools/live_view.py` | 분할 패널에 ROI 표시 + `OUTSIDE STATION` HUD |
+| `test/test_station_roi.py` | 11개 테스트 (200 mm 회귀 포함) |
 
 ```yaml
-# ros2_ws/src/roboworld_bringup/config/pose.yaml 의 pose.segmentation 아래
 station_roi:
   enabled: true
-  center_m: [0.0, 0.0, 0.60]          # 카메라 좌표계 기준 정지 위치
-  half_extents_m: [0.15, 0.15, 0.12]  # ±150 mm (부품 반길이 100 mm의 1.5배)
+  center_m: [0.0, 0.0, 0.60]
+  half_extents_m: [0.15, 0.15, 0.12]
 ```
 
-- 후보(`Candidate`)의 **중심이 이 상자 안**에 있어야 선택 대상
-- ROI 밖 부품만 있으면 `STATUS_NO_POSE` (= 아직 스테이션에 도착 안 함)
-- 라이브 뷰어에 ROI 표시 추가 예정
-
-**3D를 택한 이유 (과장 없이)**
-- 물리 단위(mm)로 지정 → 컨베이어 도면 값을 그대로 사용, 해상도·렌즈 변경에 불변
-- ❗ "3D가 카메라 이동에 견고하다"는 **사실이 아님** — 둘 다 카메라 좌표계라 같이 깨진다.
+**설계 근거 (과장 없이)**
+- 물리 단위(m)로 지정 → 컨베이어 도면 값을 그대로 사용, 해상도·렌즈 변경에 불변
+- ❗ "3D가 카메라 이동에 견고하다"는 **사실이 아님** — 카메라 좌표계라 같이 깨진다.
   진짜 불변은 station 프레임 + TF가 필요한데 ICD §4 미결 사항
 
-**주의: 검사용 ROI와 혼동 금지**
-- EfficientAD가 보는 픽셀 영역은 **이미 depth 분할 마스크**(부품 실루엣)를 쓴다.
-  사각형으로 바꾸면 벨트 배경이 섞여 **더 나빠진다**. 건드리지 말 것
-- 여기서 만드는 ROI는 **"여러 후보 중 스테이션에 있는 것을 고르는" 게이트**
+**구현하며 내린 판단**
+- 후보 중심은 **관측된 점군의 centroid**. depth는 카메라 쪽 면만 보므로 실제 중심보다
+  약 30 mm 앞. ROI가 ±100 mm대라 문제없지만 **위치 추정값이 아니다**
+- 정렬은 2단(`(not in_roi, 기존 기준)`). ROI 밖 후보도 `candidates`에 남겨
+  "부품이 200 mm 밖에 있다"를 뷰어와 `message`에서 볼 수 있게 함
+- ROI 게이트가 치수 게이트보다 **먼저**. 사유가 구분되어야 조치가 갈린다
+  (도착 대기 vs 부품 아님)
+- `capture_part.py`·`reconstruct_part.py`는 ROI **OFF** — 등록·복원은 스테이션이
+  아닌 곳에서 촬영한다 (`identify_by_size`를 끄는 것과 같은 이유)
+
+**검사용 ROI와 혼동 금지**: EfficientAD가 보는 픽셀 영역은 depth 분할
+마스크(부품 실루엣)이며 이 상자와 무관하다. 건드리지 말 것.
 
 **미확인 사항**: 벨트 진행 방향이 카메라 화면의 가로(x)인지 세로(y)인지.
-알면 ROI를 비대칭으로(진행 방향 좁게) 잡을 수 있다.
+알면 ROI를 비대칭으로(진행 방향 좁게) 잡을 수 있다 → ICD §8 체크리스트에 추가함.
 
 ---
 
@@ -93,15 +95,12 @@ station_roi:
 
 ### 커밋
 
-- `main` = `9865b84` — GitHub https://github.com/Shinhyoung/vision_robotworld 에 푸시됨
-- **미커밋 변경 3건**
-  - `docs/robot_interface_ICD.md` — v0.2.0 갱신 (부품 식별 §6.2, 작업 거리 §6.3, 시스템 구성 §10 추가)
-  - `docs/project_summary.md` — 신규 요약 보고서
-  - `README.md` — 문서 목록 링크 추가
+- `main` 최신 = 스테이션 ROI 커밋 — **아직 푸시 안 됨**
+- 원격 https://github.com/Shinhyoung/vision_robotworld 는 `55f2f87`까지 반영됨
 
 ### 검증
 
-`make check PYTHON=/usr/bin/python3.10` — 린트 · **171개 테스트** · 계약 · 정확도 전부 통과
+`make check PYTHON=/usr/bin/python3.10` — 린트 · **182개 테스트** · 계약 · 정확도 전부 통과
 
 ### 측정 결과 (모의 데이터, CPU 백엔드)
 
@@ -156,7 +155,7 @@ roboworld_ros_utils/  ← 메시지 변환 (유일한 ROS 경계)
 inspection / pose / pipeline 노드   ← 얇은 어댑터
 ```
 
-덕분에 ROS·GPU·카메라 없이 171개 테스트와 E2E dry-run이 전부 돈다.
+덕분에 ROS·GPU·카메라 없이 182개 테스트와 E2E dry-run이 전부 돈다.
 **이 구조를 깨지 말 것.**
 
 ### 이중 백엔드
@@ -201,7 +200,8 @@ inspection / pose / pipeline 노드   ← 얇은 어댑터
 | 좌표계 | `world` 프레임 정의, hand-eye 캘리브레이션 책임 주체 |
 | 시스템 구성 | PC 1대 / 2대 선택 → 전달물이 달라짐 (ICD §10) |
 | 설치 거리 | 권장 0.6 m, 상한 0.8 m |
-| 벨트 진행 방향 | ROI 기본값 결정에 필요 |
+| 벨트 진행 방향 | ROI를 진행 방향으로 좁히려면 필요 (ICD §6.2.1) |
+| 정지 위치 실측 좌표 | `station_roi.center_m` 확정용. 현재는 설계값 [0, 0, 0.60] |
 
 ---
 
@@ -217,18 +217,21 @@ inspection / pose / pipeline 노드   ← 얇은 어댑터
 | `--level`이 보정항 오프셋까지 제거 | 부품 높이가 53.6 → 37.6 mm로 축소. 보정은 중심화해서 적용 |
 | 창 닫힘을 `getWindowProperty < 1`로만 판정 | Qt는 예외를 던짐. 예외도 "닫힘"으로 처리 |
 | 로컬 등록 부품이 출하 부품 허용치로 평가 | `locally_registered` 마커로 `--part all`에서 제외 |
+| 치수 식별이면 다중 부품도 안전하다고 가정 | 뒤 부품도 치수가 **똑같이** 맞는다. 위치 게이트(스테이션 ROI)가 별도로 필요 |
 
 ---
 
 ## 9. 남은 작업 (우선순위)
 
-1. **스테이션 ROI 구현** (§3) — 설계 합의 완료
-2. 미커밋 3건 커밋·푸시
-3. 로봇 부서 회신 확보 (§7)
+1. ~~스테이션 ROI 구현~~ ✅ 완료 (§3)
+2. 스테이션 ROI 커밋·푸시
+3. 로봇 부서 회신 확보 (§7) — 특히 대칭 불변성, 벨트 진행 방향
 4. **GPU 환경 구축** — EfficientAD·FoundationPose 공통 선행 조건.
    RTX 5070은 Blackwell(sm_120)이라 지원 PyTorch 빌드 확인이 첫 관문
 5. EfficientAD 실학습 (INS-3) / Isaac ROS FoundationPose 브릿지 (POSE-4)
 6. `TopicFrameSource`(실 카메라 ROS 구독 경로) 실측 검증 — **아직 미검증**
+7. 실 카메라로 ROI 확인 — D455를 attach하고
+   `tools/live_view.py --inspect`로 상자가 정지 위치에 맞는지 눈으로 볼 것
 
 ---
 
@@ -237,4 +240,4 @@ inspection / pose / pipeline 노드   ← 얇은 어댑터
 > `/home/shinhyoung/RoboWorld_Demo` 프로젝트를 이어서 작업한다.
 > `docs/handoff.md`를 먼저 읽고 현재 상태를 파악할 것.
 > 파이썬은 `/usr/bin/python3.10`을 쓴다(기본 python3는 conda라 numpy 없음).
-> 다음 작업은 handoff.md §3의 스테이션 ROI 구현이다.
+> 다음 작업은 handoff.md §9의 우선순위 목록을 따른다.

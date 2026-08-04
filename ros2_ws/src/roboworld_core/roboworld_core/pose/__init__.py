@@ -154,7 +154,7 @@ def _segmentation_kwargs(cfg, part_id: str = "") -> dict:
     *valid* pose -- the backends must therefore get the expectation too, not
     only the config-level helper.
     """
-    from ..segmentation import expected_extents_for
+    from ..segmentation import expected_extents_for, station_roi_from_config
 
     section = cfg.section("pose.segmentation")
     camera = cfg.section("camera")
@@ -169,6 +169,10 @@ def _segmentation_kwargs(cfg, part_id: str = "") -> dict:
             float(camera.get("depth_max_m", 5.0)),
         ),
         "size_tolerance": float(section.get("size_tolerance", 0.25)),
+        # Size matching cannot separate the part at the station from an
+        # identical one further down the belt -- at 200 mm spacing it published
+        # the *next* part's pose. The station volume is what separates them.
+        "station_roi": station_roi_from_config(cfg),
     }
     if part_id and section.get("identify_by_size", True):
         kwargs["expected_extents_m"] = expected_extents_for(cfg, part_id)

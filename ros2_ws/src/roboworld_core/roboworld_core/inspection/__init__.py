@@ -87,7 +87,7 @@ def build_backend(cfg, part_id: str = "", backend: str | None = None) -> Inspect
 
 
 def _segmentation_kwargs(cfg, part_id: str = "") -> dict:
-    from ..segmentation import expected_extents_for
+    from ..segmentation import expected_extents_for, station_roi_from_config
 
     section = cfg.section("pose.segmentation")
     camera = cfg.section("camera")
@@ -102,6 +102,9 @@ def _segmentation_kwargs(cfg, part_id: str = "") -> dict:
             float(camera.get("depth_max_m", 5.0)),
         ),
         "size_tolerance": float(section.get("size_tolerance", 0.25)),
+        # Inspection and pose must agree on *which* object is at the station, or
+        # the line would grade one part and pick another.
+        "station_roi": station_roi_from_config(cfg),
     }
     # Inspecting the wrong object is as bad as posing it: the anomaly statistics
     # would be computed over a hand or a neighbouring part.

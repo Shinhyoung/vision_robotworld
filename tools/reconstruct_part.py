@@ -170,8 +170,13 @@ def main() -> int:
     # the part's dimensions, so filtering candidates by dimensions we do not
     # have yet is circular -- and for a part being re-measured it would reject
     # exactly the tilted or unexpected placements worth capturing.
+    # The station ROI is off too: reconstruction views are shot on a turntable
+    # or by hand, not at the conveyor stop position.
     cfg = load_config().merged_with(
-        {"pose": {"segmentation": {"identify_by_size": False}}}
+        {"pose": {"segmentation": {
+            "identify_by_size": False,
+            "station_roi": {"enabled": False},
+        }}}
     )
     camera = cfg.section("camera")
     views_dir = paths.data_dir() / "captures" / args.part / "views"

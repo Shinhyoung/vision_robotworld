@@ -60,11 +60,15 @@ from roboworld_core.inspection import build_backend as build_inspection  # noqa:
 from roboworld_core.mock_data import DEFECT_KINDS, MockStation, parts_from_config  # noqa: E402
 from roboworld_core.pose import build_backend as build_pose  # noqa: E402
 from roboworld_core.pose import load_part_mesh  # noqa: E402
-from roboworld_core.segmentation import segment_from_config  # noqa: E402
+from roboworld_core.segmentation import (  # noqa: E402
+    segment_from_config,
+    station_roi_from_config,
+)
 from roboworld_core.types import CameraIntrinsics  # noqa: E402
 from roboworld_core.viz import (  # noqa: E402
     anomaly_view,
     colorize_depth,
+    draw_station_roi,
     hstack_panels,
     pose_overlay,
     tint_mask,
@@ -340,6 +344,7 @@ def build_canvas(cfg, frame, analyzer: Analyzer, show_inspect: bool, show_pose: 
     # Segmentation feeds both inspection and pose, so either one needs it.
     if show_inspect or show_pose:
         segmentation = segment_from_config(frame, cfg, part_id=frame.part_id)
+        roi = station_roi_from_config(cfg)
         if segmentation.ok:
             panels.append(tint_mask(apply_gain(frame.color, gain), segmentation.mask))
             hud.append((f"segmented {segmentation.pixel_count} px", _DIM))
@@ -353,14 +358,32 @@ def build_canvas(cfg, frame, analyzer: Analyzer, show_inspect: bool, show_pose: 
                 panels.append(
                     tint_mask(apply_gain(frame.color, gain), best.mask, tint=(255, 70, 70))
                 )
-                hud.append((
-                    f"NO MATCH  closest {np.round(best.extents_m * 1000).astype(int)} mm "
-                    f"({best.size_error:.0%} off)", _RED,
-                ))
+                if best.roi_offset_m > 0.0:
+                    # Right shape, wrong place. Distinguished from a size
+                    # failure because the fix is different: move the part, the
+                    # camera or the ROI, not the tolerance.
+                    hud.append((
+                        f"OUTSIDE STATION  {best.roi_offset_m * 1000:.0f} mm out, "
+                        f"at {np.round(best.center_m * 1000).astype(int)} mm", _RED,
+                    ))
+                else:
+                    hud.append((
+                        f"NO MATCH  closest {np.round(best.extents_m * 1000).astype(int)} mm "
+                        f"({best.size_error:.0%} off)", _RED,
+                    ))
             else:
                 panels.append(apply_gain(frame.color, gain))
                 hud.append((f"NO OBJECT  {segmentation.reason[:52]}", _RED))
             hud.append((f"candidates {len(segmentation.candidates)}", _DIM))
+
+        # Aiming the camera against an invisible acceptance volume is guesswork,
+        # so put it on the panel that shows what was selected.
+        if roi is not None:
+            panels[-1] = draw_station_roi(panels[-1], roi, frame.intrinsics)
+            hud.append((
+                f"station ROI +-{np.round(roi.half_extents_m * 1000).astype(int)} mm "
+                f"@ {np.round(roi.center_m * 1000).astype(int)} mm", _DIM,
+            ))
 
     if show_inspect:
         result = analyzer.inspection(frame.part_id).infer(frame)

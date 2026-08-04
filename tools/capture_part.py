@@ -108,8 +108,13 @@ def main() -> int:
     # Identification off: a part being registered for the first time has no
     # geometry to match against, and one being re-captured should not have its
     # training frames silently filtered by the previous model's dimensions.
+    # The station ROI is off for the same reason: capturing happens wherever the
+    # camera and part can be set up, not at the conveyor stop position.
     cfg = load_config().merged_with(
-        {"pose": {"segmentation": {"identify_by_size": False}}}
+        {"pose": {"segmentation": {
+            "identify_by_size": False,
+            "station_roi": {"enabled": False},
+        }}}
     )
     camera = cfg.section("camera")
     try:

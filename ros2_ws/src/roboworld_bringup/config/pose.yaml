@@ -72,6 +72,33 @@
         # parts share the station.
         size_tolerance: 0.25
 
+        # The volume, in the camera optical frame, that a part must occupy to
+        # count as "at the station". Dimension matching above answers *is this
+        # the right part*; it cannot answer *is this the one that stopped in
+        # front of the camera*, because the next identical part on the belt
+        # matches just as well. Measured: at 200 mm part spacing the pipeline
+        # published the pose of the FOLLOWING part (y = +0.195 m).
+        #
+        # A box in meters, not an image rectangle, so the numbers come off the
+        # conveyor drawing and survive a resolution or lens change. It is NOT
+        # robust to moving the camera -- that needs a station frame and TF,
+        # still open with the robot department (ICD section 4).
+        #
+        # This is unrelated to the pixels inspection scores: those come from the
+        # depth silhouette mask, and replacing that with a rectangle would mix
+        # belt background into the anomaly statistics.
+        station_roi:
+          enabled: true
+          # Stop position. z is the belt distance; a part centre measured from
+          # depth sits ~30 mm in front of it, well inside the half extent.
+          center_m: [0.0, 0.0, 0.60]
+          # +/-150 mm laterally: 1.5x the 100 mm half length of the longest
+          # part, so a part fully at the station always fits whatever its yaw,
+          # while a neighbour at the agreed 500 mm minimum spacing never does.
+          # Once the belt travel direction is known this can be tightened along
+          # that axis, which is where neighbours actually appear.
+          half_extents_m: [0.15, 0.15, 0.12]
+
       foundationpose:
         # NOTE (claude.md section 1): the public FoundationPose release is
         # NON-COMMERCIAL. Demo use only; switch to the NGC commercial build

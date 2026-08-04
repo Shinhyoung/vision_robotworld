@@ -24,8 +24,14 @@ EXTENT_TOLERANCE_MM = 5.0
 
 @pytest.fixture(scope="module")
 def recon_cfg(cfg):
-    """Reconstruction never identifies by size -- it is defining the size."""
-    return cfg.merged_with({"pose": {"segmentation": {"identify_by_size": False}}})
+    """Reconstruction never identifies by size -- it is defining the size.
+
+    Nor by station ROI: views are shot wherever the rig is, not on the belt.
+    """
+    return cfg.merged_with({"pose": {"segmentation": {
+        "identify_by_size": False,
+        "station_roi": {"enabled": False},
+    }}})
 
 
 @pytest.fixture(scope="module")

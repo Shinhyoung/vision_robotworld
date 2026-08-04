@@ -11,12 +11,68 @@ above it, take the largest connected component.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import numpy as np
 
+from .config import ConfigError
 from .imageops import binary_dilate, binary_erode, connected_components
 from .types import CameraIntrinsics, Frame
+
+
+@dataclass
+class StationRoi:
+    """The volume a part must occupy to count as "at the station".
+
+    An axis-aligned box in the **camera optical frame**, in meters. Objects
+    whose centre falls outside it are not selectable: with several parts on the
+    belt, dimension matching alone cannot tell the one at the stop position from
+    an identical one further down, and measurement showed it picking the wrong
+    one at 200 mm spacing.
+
+    A box rather than an image rectangle so the numbers come straight off the
+    conveyor drawing and survive a resolution or lens change. Note this is *not*
+    robust to moving the camera -- both forms are expressed in the camera frame,
+    so both break together. A truly invariant ROI needs a station frame and TF,
+    which is still open with the robot department (ICD section 4).
+    """
+
+    center_m: np.ndarray
+    half_extents_m: np.ndarray
+
+    def __post_init__(self) -> None:
+        self.center_m = self._as_vector(self.center_m, "center_m")
+        self.half_extents_m = self._as_vector(self.half_extents_m, "half_extents_m")
+        if np.any(self.half_extents_m <= 0.0):
+            raise ValueError(
+                f"station ROI half extents must be positive, got {self.half_extents_m}"
+            )
+
+    @staticmethod
+    def _as_vector(value, name: str) -> np.ndarray:
+        vector = np.asarray(value, dtype=np.float64).ravel()
+        if vector.size != 3:
+            raise ValueError(f"station ROI {name} must have 3 elements, got {vector.tolist()}")
+        return vector
+
+    def offset_m(self, point: np.ndarray) -> float:
+        """Distance from ``point`` to the box surface; ``0.0`` when inside.
+
+        Reported rather than a bare bool so an operator can tell "just outside"
+        from "the part is nowhere near the station".
+        """
+        outside = np.abs(np.asarray(point, dtype=np.float64) - self.center_m)
+        outside = outside - self.half_extents_m
+        return float(np.linalg.norm(np.maximum(outside, 0.0)))
+
+    def contains(self, point: np.ndarray) -> bool:
+        return self.offset_m(point) <= 0.0
+
+    def corners(self) -> np.ndarray:
+        """The 8 box corners, for drawing it in a viewer."""
+        signs = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)])
+        return self.center_m + signs * self.half_extents_m
 
 
 @dataclass
@@ -44,10 +100,29 @@ class Candidate:
     #: Worst relative dimension error against the expected part, or ``inf`` when
     #: no expectation was given. Lower is a better match.
     size_error: float = float("inf")
+    #: Distance from :attr:`center_m` to the station ROI box, ``0.0`` when inside
+    #: it or when no ROI is configured.
+    roi_offset_m: float = 0.0
 
     @property
     def pixel_count(self) -> int:
         return int(self.mask.sum())
+
+    @property
+    def center_m(self) -> np.ndarray:
+        """Centroid of the observed points, in camera frame.
+
+        Depth only sees the faces turned towards the camera, so this sits in
+        front of the object's true centre by roughly half its thickness. That is
+        fine for deciding *which* object is at the station -- the ROI is sized in
+        hundreds of millimeters -- but it is not a position estimate; the pose
+        backends compute that properly.
+        """
+        return self.points.mean(axis=0) if len(self.points) else np.zeros(3)
+
+    @property
+    def in_roi(self) -> bool:
+        return self.roi_offset_m <= 0.0
 
 
 @dataclass
@@ -165,6 +240,7 @@ def segment_part(
     seed: int = 0,
     expected_extents_m: np.ndarray | None = None,
     size_tolerance: float = 0.25,
+    station_roi: StationRoi | None = None,
 ) -> Segmentation:
     """Segment the part from a frame using depth only.
 
@@ -180,6 +256,11 @@ def segment_part(
             part cannot be inspected or pose-estimated as if it were the part.
             ``None`` keeps the largest-blob behaviour.
         size_tolerance: allowed relative error on the worst dimension.
+        station_roi: volume a candidate's centre must lie in to be selectable.
+            Dimension matching answers "is this the right part"; it cannot
+            answer "is this the one that stopped in front of the camera",
+            because the next identical part on the belt matches just as well.
+            ``None`` disables the check.
     """
     depth = np.asarray(frame.depth, dtype=np.float64)
     intr: CameraIntrinsics = frame.intrinsics
@@ -230,34 +311,55 @@ def segment_part(
             continue
         component = labels == label
         component_points = points[component[rows, cols]]
-        candidates.append(
-            Candidate(component, component_points, measure_extents(component_points, plane))
+        candidate = Candidate(
+            component, component_points, measure_extents(component_points, plane)
         )
+        if station_roi is not None:
+            candidate.roi_offset_m = station_roi.offset_m(candidate.center_m)
+        candidates.append(candidate)
 
     if not candidates:
         return Segmentation(empty, np.zeros((0, 3)), plane, 0,
                             reason=f"no cluster reached {min_cluster_points} points")
 
+    # Ranking is two-tier: anything outside the station volume sorts last
+    # regardless of how well it matches, so it can never be selected, but it
+    # stays in ``candidates`` because "the part is 200 mm too far down the belt"
+    # is exactly what an operator needs to see.
     if expected_extents_m is None:
         # No part identity to check against: keep the historical behaviour of
         # taking the biggest thing on the surface.
-        candidates.sort(key=lambda c: -c.pixel_count)
+        candidates.sort(key=lambda c: (not c.in_roi, -c.pixel_count))
     else:
         expected = np.asarray(expected_extents_m, dtype=np.float64)
         for candidate in candidates:
             candidate.size_error = size_mismatch(candidate.extents_m, expected)
-        candidates.sort(key=lambda c: c.size_error)
-        if candidates[0].size_error > size_tolerance:
-            best = candidates[0]
-            return Segmentation(
-                empty, np.zeros((0, 3)), plane, 0, candidates=candidates,
-                reason=(
-                    f"no object matches the registered part: closest is "
-                    f"{np.round(best.extents_m * 1000, 1)} mm vs expected "
-                    f"{np.round(np.sort(expected)[::-1] * 1000, 1)} mm "
-                    f"({best.size_error:.0%} off, tolerance {size_tolerance:.0%})"
-                ),
-            )
+        candidates.sort(key=lambda c: (not c.in_roi, c.size_error))
+
+    if station_roi is not None and not candidates[0].in_roi:
+        # Distinct from a size failure, and the line acts on it differently: no
+        # part has reached the station yet, so waiting is the correct response.
+        best = candidates[0]
+        return Segmentation(
+            empty, np.zeros((0, 3)), plane, 0, candidates=candidates,
+            reason=(
+                f"no object inside the station volume: best of "
+                f"{len(candidates)} is {best.roi_offset_m * 1000:.0f} mm "
+                f"outside, centred at {np.round(best.center_m * 1000, 1)} mm"
+            ),
+        )
+
+    if expected_extents_m is not None and candidates[0].size_error > size_tolerance:
+        best = candidates[0]
+        return Segmentation(
+            empty, np.zeros((0, 3)), plane, 0, candidates=candidates,
+            reason=(
+                f"no object matches the registered part: closest is "
+                f"{np.round(best.extents_m * 1000, 1)} mm vs expected "
+                f"{np.round(np.sort(expected)[::-1] * 1000, 1)} mm "
+                f"({best.size_error:.0%} off, tolerance {size_tolerance:.0%})"
+            ),
+        )
 
     chosen = candidates[0]
     return Segmentation(
@@ -296,7 +398,27 @@ def segment_from_config(
         seed=seed,
         expected_extents_m=expected,
         size_tolerance=tolerance,
+        station_roi=station_roi_from_config(cfg),
     )
+
+
+def station_roi_from_config(cfg) -> StationRoi | None:
+    """The station volume from ``pose.segmentation.station_roi``, if enabled.
+
+    Absent or ``enabled: false`` returns ``None``, which restores the
+    pre-ROI behaviour of considering every object on the belt.
+    """
+    section = cfg.section("pose.segmentation")
+    roi = section.get("station_roi", None)
+    if not isinstance(roi, Mapping) or not roi.get("enabled", False):
+        return None
+    try:
+        return StationRoi(roi["center_m"], roi["half_extents_m"])
+    except KeyError as missing:
+        raise ConfigError(
+            f"pose.segmentation.station_roi is enabled but {missing} is missing "
+            f"(source: {cfg.source})"
+        ) from None
 
 
 def expected_extents_for(cfg, part_id: str) -> np.ndarray | None:
