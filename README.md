@@ -40,6 +40,8 @@ PASSED: every cycle satisfied the ICD contract
 
 | 문서 | 내용 |
 |---|---|
+| **[docs/handoff.md](docs/handoff.md)** | **세션 인수인계 — 현재 상태·환경·다음 작업** |
+| **[docs/project_summary.md](docs/project_summary.md)** | **프로젝트 요약 보고서 — 개요·모델·개발내용·현황** |
 | **[docs/robot_interface_ICD.md](docs/robot_interface_ICD.md)** | **로봇 부서 인터페이스 계약 — 최우선 문서** |
 | [docs/architecture.md](docs/architecture.md) | 아키텍처, 데이터 흐름, 알고리즘, 측정 결과 |
 | [docs/setup_wsl.md](docs/setup_wsl.md) | WSL2 / CUDA / usbipd / ROS 2 구축 절차 |
