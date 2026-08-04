@@ -19,7 +19,7 @@ roboworld_inspection/    roboworld_pose/    roboworld_pipeline/    ← 노드 = 
 ```
 
 **이유**: ROS·CUDA·카메라가 준비되기 전에도 4명이 병렬로 개발·테스트할 수 있어야 한다.
-현재 이 저장소는 **ROS 미설치 환경에서 154개 유닛 테스트와 E2E dry-run이 모두 통과**한다.
+현재 이 저장소는 **ROS 미설치 환경에서 171개 유닛 테스트와 E2E dry-run이 모두 통과**한다.
 
 부작용으로 얻는 것:
 - 분기 로직·택트 예산·NG-포즈-생략 규칙이 단위 테스트로 검증된다 (`test_pipeline.py`).
