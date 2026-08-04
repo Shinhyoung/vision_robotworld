@@ -1,0 +1,10 @@
+# Synchronous inspection request. Called by the pipeline node only.
+sensor_msgs/Image color             # rgb8, required
+sensor_msgs/Image depth             # 16UC1 (mm) or 32FC1 (m), aligned to color; may be empty
+sensor_msgs/CameraInfo camera_info  # intrinsics of the color frame
+string part_id
+uint32 sequence
+---
+roboworld_interfaces/InspectionResult result
+bool success                        # false => backend failure, `result` is not meaningful
+string message

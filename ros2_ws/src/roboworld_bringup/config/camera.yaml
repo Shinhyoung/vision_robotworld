@@ -1,0 +1,48 @@
+# Intel RealSense D455 configuration.
+#
+# The intrinsics below are NOMINAL values for the 640x480 color stream and are
+# used by the mock renderer and by unit tests. At runtime the camera node
+# overwrites them from the live sensor_msgs/CameraInfo -- never trust these
+# numbers for a real metrology claim.
+/**:
+  ros__parameters:
+    camera:
+      width: 640
+      height: 480
+      fx: 384.0
+      fy: 384.0
+      cx: 320.0
+      cy: 240.0
+      distortion: [0.0, 0.0, 0.0, 0.0, 0.0]   # rectified color stream
+
+      # TF frame names, must match realsense-ros defaults (see ICD section 4).
+      optical_frame_id: "camera_color_optical_frame"
+      link_frame_id: "camera_link"
+
+      # realsense-ros driver settings
+      fps: 30
+      align_depth: true          # REQUIRED: depth must be registered to color
+      depth_units_m: 0.001       # 16UC1 depth images are in millimeters
+      depth_min_m: 0.20
+      depth_max_m: 2.00
+
+      # Topics published by realsense-ros (camera_namespace = /camera)
+      color_topic: "/camera/camera/color/image_raw"
+      depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
+      camera_info_topic: "/camera/camera/color/camera_info"
+
+      # Frame source: "realsense" | "rosbag" | "mock"
+      # WSL2 has no USB by default; see docs/setup_wsl.md before using "realsense".
+      source: "mock"
+      rosbag_path: "${ROBOWORLD_DATA_DIR}/rosbags/station_capture"
+
+      # Max age of a cached frame that a trigger may consume, seconds.
+      frame_timeout_s: 1.0
+      # Max |color.stamp - depth.stamp| accepted by the synchroniser, seconds.
+      sync_tolerance_s: 0.030
+
+    station:
+      # Nominal camera height above the belt, meters. Used by the mock station
+      # and as the sanity window for pose validation.
+      camera_height_m: 0.60
+      belt_size_m: [1.2, 0.6]

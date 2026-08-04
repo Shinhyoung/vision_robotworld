@@ -1,0 +1,23 @@
+# Core dependencies -- everything needed to run the ROS-free core, the tools,
+# the tests and the E2E dry-run. No GPU, no ROS, no camera.
+#
+#   python3 -m pip install -r requirements.txt
+#
+# ROS packages (rclpy, sensor_msgs, ...) are NOT installed by pip; they come
+# from the ROS 2 Humble apt packages -- see docs/setup_wsl.md section 5.
+
+numpy>=1.24,<3
+PyYAML>=6.0
+
+# Testing / linting
+pytest>=7.4
+ruff>=0.4
+
+# Optional but recommended:
+#   opencv-python -- live window in tools/live_view.py (`make live`).
+#                    Needs a display; on WSL2 that means WSLg (Windows 11).
+#                    Use opencv-python-headless if you only want --backend mjpeg.
+#   open3d        -- faster KD-tree ICP (the numpy fallback is used when absent)
+#   Pillow        -- PNG export in tools/export_mock_images.py (built-in fallback exists)
+# All are left out of the default install because they are large and the code
+# degrades cleanly without them.

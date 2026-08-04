@@ -1,0 +1,7 @@
+# Manual / PLC trigger for one index cycle. Equivalent to a rising edge on the
+# station photo sensor topic.
+string part_id                      # "" => use the pipeline's configured default part
+---
+bool accepted                       # false if the pipeline is busy with another cycle
+uint32 sequence                     # sequence assigned to this cycle (valid if accepted)
+string message

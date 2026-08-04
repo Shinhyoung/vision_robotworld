@@ -1,0 +1,49 @@
+# Part catalogue -- MC nylon blocks handled at the index station.
+# CAD lives in 01_input/ (source tree) or share/roboworld_bringup/meshes (installed).
+# `${ROBOWORLD_ASSETS_DIR}` is expanded by roboworld_core.paths.resolve_path.
+#
+# MODEL FRAME (ICD section 4): origin at the CAD axis-aligned bounding box
+# center, +x along the 200 mm long axis, +z along the thin axis. Meshes are
+# re-centered on load, so the published pose always refers to the block center.
+#
+# `symmetry` lists the rotations under which the part is (near-)indistinguishable
+# from a single-view depth observation. All three blocks have a 55 x 55 mm square
+# cross-section: machined features break the symmetry by only 3.5-12.5 mm chamfer
+# (tools/check_symmetry.py), which is below the ICP inlier gate. Orientation is
+# therefore resolved only up to this group -- see ICD section 6.
+/**:
+  ros__parameters:
+    parts:
+      guide_block:
+        mesh: "${ROBOWORLD_ASSETS_DIR}/01_Guide_Block.ply"
+        mesh_units: "m"          # CAD authored in meters; use "mm" to trigger mm->m scaling
+        color: [196, 188, 170]   # nominal MC nylon ivory, used by the mock renderer
+        description: "01 Guide Block, 200 x 55 x 55 mm"
+        symmetry:
+          - axis: [1.0, 0.0, 0.0]      # about the long axis: square cross-section
+            angles_deg: [0.0, 90.0, 180.0, 270.0]
+          - axis: [0.0, 0.0, 1.0]      # end-for-end flip
+            angles_deg: [0.0, 180.0]
+      spacer_block:
+        mesh: "${ROBOWORLD_ASSETS_DIR}/03_Spacer_Block.ply"
+        mesh_units: "m"
+        color: [190, 180, 160]
+        description: "03 Spacer Block, 200 x 55 x 55 mm"
+        symmetry:
+          - axis: [1.0, 0.0, 0.0]
+            angles_deg: [0.0, 90.0, 180.0, 270.0]
+          - axis: [0.0, 0.0, 1.0]
+            angles_deg: [0.0, 180.0]
+      end_stopper:
+        mesh: "${ROBOWORLD_ASSETS_DIR}/05_End_Stopper.ply"
+        mesh_units: "m"
+        color: [186, 176, 158]
+        description: "05 End Stopper, 200 x 55 x 55 mm"
+        symmetry:
+          - axis: [1.0, 0.0, 0.0]
+            angles_deg: [0.0, 90.0, 180.0, 270.0]
+          - axis: [0.0, 0.0, 1.0]
+            angles_deg: [0.0, 180.0]
+
+    # Part fed when a trigger arrives without an explicit part_id.
+    default_part_id: "guide_block"

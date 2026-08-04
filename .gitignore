@@ -1,0 +1,48 @@
+# ROS 2 / colcon
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+.catkin_tools/
+
+# Generated artefacts: mock datasets, trained models, rosbags, camera captures,
+# reports. Reproducible (`make dataset`, `make evaluate`) and large -- and the
+# captures are photographs of whatever was in front of the camera, which has no
+# business in a shared repository.
+data/
+
+# Parts registered locally from camera captures (tools/register_part.py).
+# Machine-specific: the entries point at meshes under data/, by absolute path.
+# Committing it would hand everyone else a broken reference.
+ros2_ws/src/roboworld_bringup/config/parts_local.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Models / checkpoints wherever they land
+*.ckpt
+*.pth
+*.onnx
+*.engine
+
+# rosbags
+*.db3
+*.mcap
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

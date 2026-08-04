@@ -1,0 +1,64 @@
+# Surface defect inspection (claude.md section 3.2).
+# Thresholds are externalised here -- never hardcode them (section 4).
+/**:
+  ros__parameters:
+    inspection:
+      # Backend: "efficientad" (anomalib, needs GPU + trained checkpoint)
+      #          "statistical" (numpy patch-Mahalanobis, CPU, no training deps)
+      #          "stub"        (ground-truth passthrough, dry-run only)
+      backend: "statistical"
+
+      # OK/NG decision. score > threshold => NG.
+      threshold: 0.50
+      # When a model is (re)trained, the threshold is recalibrated to this
+      # percentile of the normal-set score distribution plus a safety margin,
+      # then clamped into [threshold_min, threshold_max].
+      calibration_percentile: 99.0
+      calibration_margin: 0.05
+      threshold_min: 0.10
+      threshold_max: 0.95
+
+      # Pixels above this fraction of the map maximum enter the defect mask.
+      mask_relative_threshold: 0.55
+      # NG also requires a connected defect of at least this many pixels,
+      # which suppresses single-pixel sensor noise firing a false reject.
+      min_defect_area_px: 12
+
+      publish_anomaly_map: true
+      publish_defect_mask: true
+
+      statistical:
+        patch_size: 16          # feature grid cell, pixels
+        stride: 8
+        blur_sigma_px: 2.0      # smoothing applied to the raw score map
+        regularization: 1.0e-3  # added to the covariance diagonal
+        # Score normalisation. Image raw scores are mapped through
+        #   score = clip(0.5 * raw / (safety_factor * hi), 0, 1)
+        # where hi is the norm_high_percentile of the TRAINING score
+        # distribution. Score 0.5 therefore sits `safety_factor` times above the
+        # normal upper percentile: raise safety_factor if good parts are being
+        # rejected, lower it if defects slip through.
+        #
+        # (95, 1.6) was selected by sweeping both over measured raw scores for
+        # all three parts at 40 and 80 training frames: 0 missed defects out of
+        # 150 and 2 false rejects out of 150 (tools/evaluate.py). Both false
+        # rejects are the same extreme-placement guide_block frame, whose raw
+        # score genuinely overlaps the weak-defect range -- see
+        # docs/architecture.md section 7. Re-measure on real captures; do not
+        # carry these numbers over blindly.
+        norm_low_percentile: 50.0     # diagnostics only
+        norm_high_percentile: 95.0
+        safety_factor: 1.6
+        model_path: "${ROBOWORLD_DATA_DIR}/models/statistical_${part_id}.npz"
+
+      efficientad:
+        model_path: "${ROBOWORLD_DATA_DIR}/models/efficientad_${part_id}.ckpt"
+        image_size: [256, 256]
+        device: "cuda"
+        model_size: "small"     # anomalib EfficientAd: "small" | "medium"
+
+      training:
+        # Normal (defect-free) images used to fit the model.
+        dataset_dir: "${ROBOWORLD_DATA_DIR}/mock/train"
+        max_epochs: 20
+        batch_size: 1

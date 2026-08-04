@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/usr/bin/python3.10 -)",
+      "Bash(PYTHONPATH=ros2_ws/src/roboworld_core /usr/bin/python3.10 -)",
+      "Bash(PYTHONUNBUFFERED=1 PYTHONPATH=ros2_ws/src/roboworld_core timeout 900 /usr/bin/python3.10 -)",
+      "Bash(PYTHONUNBUFFERED=1 PYTHONPATH=ros2_ws/src/roboworld_core timeout 600 /usr/bin/python3.10 -)",
+      "Bash(/usr/bin/python3.10 -m ruff check ros2_ws/src tools --output-format concise)",
+      "Bash(PYTHONPATH=ros2_ws/src/roboworld_core /usr/bin/python3.10 -m pytest ros2_ws/src/roboworld_core/test -q)",
+      "Bash(PYTHONUNBUFFERED=1 PYTHONPATH=ros2_ws/src/roboworld_core timeout 3000 /usr/bin/python3.10 -)",
+      "Bash(PYTHONUNBUFFERED=1 timeout 3000 /usr/bin/python3.10 tools/evaluate.py --part all --frames 25 --train-frames 40 --json data/evaluation.json)",
+      "Bash(\"/mnt/c/Program Files/usbipd-win/usbipd.exe\" list)"
+    ]
+  }
+}

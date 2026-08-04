@@ -1,0 +1,12 @@
+# Synchronous 6D pose request. Called by the pipeline node ONLY for parts that
+# passed inspection (is_good == true). Pose is never requested for NG parts.
+sensor_msgs/Image color             # rgb8
+sensor_msgs/Image depth             # 16UC1 (mm) or 32FC1 (m), aligned to color, required
+sensor_msgs/CameraInfo camera_info
+sensor_msgs/Image roi_mask          # mono8 object hint, empty (height==0) if unavailable
+string part_id                      # selects the CAD model to register against
+uint32 sequence
+---
+roboworld_interfaces/PoseResult result
+bool success
+string message

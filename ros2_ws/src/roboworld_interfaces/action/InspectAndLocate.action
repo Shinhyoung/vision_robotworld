@@ -1,0 +1,16 @@
+# Optional long-running entry point for one index cycle.
+# Provided so the robot department can drive a cycle request/response style
+# instead of subscribing to the fire-and-forget /roboworld/part_result topic.
+string part_id
+bool publish_debug_images
+---
+roboworld_interfaces/PartResult result
+---
+uint8 STAGE_IDLE=0
+uint8 STAGE_CAPTURE=1
+uint8 STAGE_INSPECT=2
+uint8 STAGE_POSE=3
+uint8 STAGE_PUBLISH=4
+uint8 stage
+float32 elapsed_ms
+string message

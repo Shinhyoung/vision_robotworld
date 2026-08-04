@@ -1,0 +1,44 @@
+# Pipeline orchestration (claude.md section 3.4).
+/**:
+  ros__parameters:
+    pipeline:
+      version: "0.1.0"
+
+      # Topics -- the final output topic is the robot department contract.
+      trigger_topic: "/roboworld/trigger"                # std_msgs/Bool, rising edge
+      inspection_topic: "/roboworld/inspection_result"   # diagnostics
+      pose_topic: "/roboworld/pose_result"               # diagnostics
+      result_topic: "/roboworld/part_result"             # ICD OUTPUT (contract)
+      status_topic: "/roboworld/pipeline_status"         # diagnostic_msgs
+
+      # Service names used internally between pipeline / inspection / pose.
+      inspect_service: "/roboworld/inspect_part"
+      pose_service: "/roboworld/estimate_pose"
+      trigger_service: "/roboworld/trigger_capture"
+
+      # QoS for the output topic. Must match the ICD, section 5.
+      output_qos:
+        reliability: "reliable"
+        durability: "transient_local"   # late subscribers get the last result
+        history: "keep_last"
+        depth: 10
+
+      # Cycle behaviour
+      skip_pose_when_ng: true       # claude.md: NG parts report result only
+      trigger_debounce_s: 0.30
+      service_timeout_s: 5.0
+      max_concurrent_cycles: 1      # index station: one part at a time
+
+      # Tact time budget, milliseconds. Exceeding `warn` logs a warning;
+      # exceeding `limit` aborts the cycle with STATUS_ERROR.
+      tact_budget_ms:
+        capture: 120.0
+        inspect: 400.0
+        pose: 900.0
+        total_warn: 1200.0
+        total_limit: 5000.0
+
+      # Diagnostics
+      log_tact_time: true
+      record_rosbag_on_ng: false
+      rosbag_output_dir: "${ROBOWORLD_DATA_DIR}/rosbags"

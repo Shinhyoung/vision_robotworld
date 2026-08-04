@@ -1,0 +1,34 @@
+# GPU extras: EfficientAD (anomalib) and the point-cloud stack.
+#
+#   python3 -m pip install -r requirements-gpu.txt
+#
+# PREREQUISITES (docs/setup_wsl.md section 3):
+#   * Windows NVIDIA driver with Blackwell / RTX 50 support
+#   * WSL CUDA Toolkit 12.x  (NEVER install a Linux NVIDIA driver inside WSL)
+#   * A PyTorch build that ships sm_120 kernels -- RTX 5070 is compute 12.0, and
+#     a wheel without sm_120 fails at runtime with
+#     "no kernel image is available for execution on the device".
+#
+# Install torch FIRST, from the CUDA 12.x index, then this file:
+#   python3 -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+# If sm_120 is missing from torch.cuda.get_arch_list(), use the nightly channel.
+
+-r requirements.txt
+
+anomalib>=1.1
+torch>=2.4
+torchvision>=0.19
+
+# Point cloud / registration. Open3D accelerates the ICP backend; without it
+# roboworld_core.pose.icp falls back to its own numpy implementation.
+open3d>=0.18
+
+# Mesh handling for FoundationPose interop
+trimesh>=4.0
+
+# Image IO for dataset export
+Pillow>=10.0
+
+# NOTE (claude.md section 1): FoundationPose itself is NOT installed here.
+# The public release is NON-COMMERCIAL and is deployed through the Isaac ROS
+# container -- see docs/setup_wsl.md section 8.

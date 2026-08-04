@@ -1,0 +1,82 @@
+# 6D pose estimation (claude.md section 3.3).
+/**:
+  ros__parameters:
+    pose:
+      # Backend: "foundationpose" (Isaac ROS, GPU)
+      #          "icp"            (Open3D/numpy registration, CPU reference)
+      #          "stub"           (fixed nominal pose, dry-run only)
+      backend: "icp"
+
+      # Frame the published pose is expressed in. "camera_color_optical_frame"
+      # is always available; "world" requires the TF chain from the robot
+      # department (see ICD section 4 and the calibration responsibility note).
+      output_frame_id: "camera_color_optical_frame"
+      # If true and TF is available, additionally transform into output_frame_id;
+      # if the transform is missing the pose is published in the optical frame
+      # and `message` records the fallback.
+      transform_to_output_frame: false
+
+      # Acceptance gate. A pose failing any of these is published with
+      # valid=false and the pipeline emits STATUS_NO_POSE.
+      min_fitness: 0.35
+      max_rmse_m: 0.006
+      # Sanity window on the part center in the camera optical frame, meters.
+      valid_z_range_m: [0.30, 1.00]
+      max_lateral_offset_m: 0.25
+
+      icp:
+        model_points: 2000        # surface samples from the CAD mesh
+        scene_max_points: 600     # random subsample of the segmented scene cloud
+        voxel_size_m: 0.003
+        max_iterations: 40
+        tolerance_m: 1.0e-5
+        # Yaw seeds are scored with a cheap decimated pass; only the winner gets
+        # the full refinement. Registering all seeds at full resolution costs
+        # ~8x wall time for no accuracy gain.
+        coarse_iterations: 12
+        coarse_model_points: 900
+        coarse_scene_points: 300
+        # Correspondences farther than this are rejected each iteration; the
+        # schedule shrinks from coarse to fine across iterations.
+        max_correspondence_start_m: 0.030
+        max_correspondence_end_m: 0.006
+        # Initial-guess hypotheses. A block on a belt rests on one of its four
+        # long faces, with the long axis pointing either way: 4 x 2 = 8 discrete
+        # seeds. +/-x is excluded because a 200 mm block does not stand on end.
+        resting_faces: ["+y", "-y", "+z", "-z"]
+        try_long_axis_flip: true
+        # Percentile of the cloud treated as "the surface facing the camera"
+        # when anchoring the initial depth (a plain max would latch onto noise).
+        surface_percentile: 98.0
+        use_open3d: true          # falls back to the numpy ICP when unavailable
+
+      segmentation:
+        # Remove the conveyor plane before registration.
+        plane_ransac_iterations: 120
+        plane_distance_threshold_m: 0.006
+        # Keep only points within this height band above the detected plane.
+        min_height_above_plane_m: 0.008
+        max_height_above_plane_m: 0.120
+        min_cluster_points: 300
+
+        # Identify the part by its dimensions instead of taking the largest
+        # object on the surface. Without this a hand, a tool or a neighbouring
+        # part gets inspected and pose-estimated as if it were the part.
+        # Requires the part to have geometry; parts registered without a mesh
+        # fall back to largest-object.
+        identify_by_size: true
+        # Allowed relative error on the worst of (length, width, height).
+        # 0.25 accommodates depth noise, the silhouette dilation segmentation
+        # applies, and a partly occluded part, while still rejecting anything
+        # that is not roughly the right shape. Tighten it when several similar
+        # parts share the station.
+        size_tolerance: 0.25
+
+      foundationpose:
+        # NOTE (claude.md section 1): the public FoundationPose release is
+        # NON-COMMERCIAL. Demo use only; switch to the NGC commercial build
+        # before productisation.
+        mesh_dir: "${ROBOWORLD_ASSETS_DIR}"
+        refine_iterations: 5
+        track: false              # index station is stop-and-go, not tracking
+        device: "cuda"

@@ -1,0 +1,35 @@
+# Tooling configuration only -- the ROS packages are built by colcon, not pip.
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = ["ros2_ws/build", "ros2_ws/install", "ros2_ws/log", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM"]
+ignore = [
+    "B008",    # function call in default argument -- used deliberately for factories
+    "SIM108",  # ternary is not always clearer than if/else
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tools must call bootstrap() before importing workspace packages, so their
+# imports cannot all sit at the top of the file.
+"tools/*.py" = ["E402"]
+# Tests may use assert-heavy, repetitive style.
+"ros2_ws/src/*/test/*.py" = ["B011"]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "roboworld_core",
+    "roboworld_ros_utils",
+    "roboworld_interfaces",
+    "roboworld_inspection",
+    "roboworld_pose",
+    "roboworld_pipeline",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["ros2_ws/src/roboworld_core/test"]
+pythonpath = ["ros2_ws/src/roboworld_core"]
+filterwarnings = ["error::DeprecationWarning"]

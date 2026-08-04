@@ -1,0 +1,146 @@
+name: CI
+
+# Merge gates for docs/git_strategy.md section 5.
+# `core` runs without ROS and without a GPU -- that is the whole point of the
+# ROS-free core, and it keeps the contract gate fast enough to run on every push.
+# `ros` builds the real workspace in a Humble container.
+
+on:
+  push:
+    branches: [main, "feat/**", "fix/**", "docs/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: python -m pip install --upgrade pip ruff
+      - name: ruff
+        run: ruff check ros2_ws/src tools
+
+  core:
+    name: Core tests + contract gate
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+
+      # Gate 2 + 3: unit tests, including the .msg <-> dataclass contract test.
+      - name: Unit tests
+        run: python -m pytest ros2_ws/src/roboworld_core/test -q
+        env:
+          PYTHONPATH: ros2_ws/src/roboworld_core
+
+      # Gate 4: the full index cycle with stub backends -- fast, deterministic,
+      # and validates every published PartResult against the ICD.
+      - name: E2E dry-run (stubs)
+        run: python tools/e2e_dryrun.py --cycles 9 --json data/dryrun_stub.json
+
+      # Same gate with the real CPU backends, so the actual detector and
+      # registration paths are exercised too.
+      - name: E2E dry-run (statistical + icp)
+        run: |
+          python tools/e2e_dryrun.py --cycles 9 \
+            --inspection statistical --pose icp \
+            --json data/dryrun_real.json
+
+      - name: Mock dataset generation
+        run: python tools/generate_mock_dataset.py --part guide_block --train 4 --test 4
+
+      - name: Symmetry report
+        run: python tools/check_symmetry.py
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dryrun-reports
+          path: data/*.json
+
+  accuracy:
+    name: Accuracy gate
+    runs-on: ubuntu-22.04
+    # Slower than the contract gate (renders and fits per part), so it does not
+    # block every push on a feature branch.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+
+      # Gate 5. Tolerances are arguments, not magic numbers buried in the tool:
+      # a missed defect ships a bad part and is never allowed; a false reject
+      # costs one part and gets a budget.
+      - name: Detection and pose accuracy
+        run: |
+          python tools/evaluate.py --part all --frames 25 --train-frames 40 \
+            --max-miss-rate 0.0 --max-false-reject-rate 0.05 \
+            --max-translation-mm 5.0 --max-rotation-deg 5.0 \
+            --json data/evaluation.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evaluation
+          path: data/evaluation.json
+
+  ros:
+    name: colcon build + test (Humble)
+    runs-on: ubuntu-22.04
+    container:
+      image: ros:humble-ros-base-jammy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y python3-pip python3-colcon-common-extensions python3-rosdep \
+                             ros-humble-tf2-ros ros-humble-message-filters \
+                             ros-humble-diagnostic-msgs ros-humble-sensor-msgs
+          python3 -m pip install --upgrade pip
+          python3 -m pip install numpy PyYAML pytest
+
+      # Gate 6.
+      - name: colcon build
+        shell: bash
+        run: |
+          source /opt/ros/humble/setup.bash
+          cd ros2_ws
+          colcon build --symlink-install --event-handlers console_direct+
+
+      - name: colcon test
+        shell: bash
+        run: |
+          source /opt/ros/humble/setup.bash
+          cd ros2_ws
+          source install/setup.bash
+          colcon test --event-handlers console_direct+ --return-code-on-test-failure
+
+      # The interface package is the contract; make sure it is actually
+      # introspectable after the build, not merely that the build succeeded.
+      - name: Verify generated interfaces
+        shell: bash
+        run: |
+          source /opt/ros/humble/setup.bash
+          source ros2_ws/install/setup.bash
+          ros2 interface show roboworld_interfaces/msg/PartResult
+          ros2 interface show roboworld_interfaces/srv/InspectPart
+          ros2 interface show roboworld_interfaces/action/InspectAndLocate
