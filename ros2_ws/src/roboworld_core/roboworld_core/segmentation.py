@@ -235,12 +235,22 @@ def fit_plane_ransac(
     return PlaneModel(normal, offset, float(inliers.mean()))
 
 
+def color_edge_gradient(color: np.ndarray, blur_sigma_px: float = 1.0) -> np.ndarray:
+    """Edge strength of a colour frame, for :func:`snap_mask_to_color_edge`.
+
+    Split out because it depends on the frame alone: one frame holding several
+    candidates needs it once, not once per candidate.
+    """
+    return sobel_magnitude(gaussian_blur(to_gray(color), blur_sigma_px))
+
+
 def snap_mask_to_color_edge(
     mask: np.ndarray,
     color: np.ndarray,
     max_shift_px: int = 3,
     min_gradient: float = 8.0,
     blur_sigma_px: float = 1.0,
+    gradient: np.ndarray | None = None,
 ) -> np.ndarray:
     """Move a depth mask's boundary onto the nearest strong colour edge.
 
@@ -269,8 +279,25 @@ def snap_mask_to_color_edge(
     if not mask.any() or max_shift_px < 1:
         return mask
 
-    height, width = mask.shape
-    gradient = sobel_magnitude(gaussian_blur(to_gray(color), blur_sigma_px))
+    if gradient is None:
+        gradient = color_edge_gradient(color, blur_sigma_px)
+
+    # Work in the candidate's own bounding box. Everything below is either
+    # morphology or a blur over the array it is given, and a part covers a few
+    # percent of a 640x480 frame -- doing it full-size for every candidate was
+    # most of what remained of the cost.
+    rows_any, cols_any = np.nonzero(mask)
+    pad = max_shift_px + 3
+    r0 = max(int(rows_any.min()) - pad, 0)
+    r1 = min(int(rows_any.max()) + pad + 1, mask.shape[0])
+    c0 = max(int(cols_any.min()) - pad, 0)
+    c1 = min(int(cols_any.max()) + pad + 1, mask.shape[1])
+    window = (slice(r0, r1), slice(c0, c1))
+
+    local = mask[window]
+    gradient = gradient[window]
+    height, width = local.shape
+    full, mask = mask, local
 
     # Outward normal from a smoothed indicator: the field falls off outward, so
     # the negated gradient points out of the object.
@@ -281,7 +308,7 @@ def snap_mask_to_color_edge(
     edge = mask & ~binary_erode(mask, 1)
     rows, cols = np.nonzero(edge & (magnitude > 1e-6))
     if len(rows) == 0:
-        return mask
+        return full
 
     normal_x = -dx[rows, cols] / magnitude[rows, cols]
     normal_y = -dy[rows, cols] / magnitude[rows, cols]
@@ -302,7 +329,7 @@ def snap_mask_to_color_edge(
 
     core = binary_erode(mask, max_shift_px)
     if not core.any():
-        return mask  # too thin to reshape safely
+        return full  # too thin to reshape safely
 
     refined = core.copy()
     inside = offsets[None, :] <= offsets[chosen][:, None]
@@ -310,7 +337,11 @@ def snap_mask_to_color_edge(
     # The rays are discrete, so close the pinholes they leave between them.
     refined = binary_erode(binary_dilate(refined, 1), 1)
     # Never let the boundary travel further than it was allowed to.
-    return refined & binary_dilate(mask, max_shift_px)
+    refined &= binary_dilate(mask, max_shift_px)
+
+    out = np.zeros_like(full)
+    out[window] = refined
+    return out
 
 
 def refine_support_to_crowns(
@@ -455,6 +486,9 @@ def segment_part(
         return Segmentation(empty, np.zeros((0, 3)), plane, 0,
                             reason="nothing found above the plane")
 
+    # Depends on the frame, not on any candidate -- build it once.
+    snap_gradient = color_edge_gradient(frame.color) if color_snap_px > 0 else None
+
     candidates: list[Candidate] = []
     for label in range(1, len(sizes)):
         if sizes[label] < min_cluster_points:
@@ -462,7 +496,8 @@ def segment_part(
         component = labels == label
         if color_snap_px > 0:
             snapped = snap_mask_to_color_edge(
-                component, frame.color, color_snap_px, color_snap_min_gradient
+                component, frame.color, color_snap_px, color_snap_min_gradient,
+                gradient=snap_gradient,
             )
             # Only take it if something is left; a boundary this thin is not
             # worth reshaping.

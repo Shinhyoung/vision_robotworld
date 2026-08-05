@@ -25,11 +25,22 @@ def gaussian_blur(image: np.ndarray, sigma: float) -> np.ndarray:
     kernel = np.exp(-(x ** 2) / (2.0 * sigma ** 2))
     kernel /= kernel.sum()
 
+    # Separable, and applied as a sum over kernel taps rather than
+    # np.apply_along_axis: the latter is a Python loop over every row and then
+    # every column, which dominated the frame at 640x480 (2.3 ms a call, and
+    # segmentation calls it once per candidate).
     out = np.asarray(image, dtype=np.float32)
+    height, width = out.shape
+
     padded = np.pad(out, ((0, 0), (radius, radius)), mode="edge")
-    out = np.apply_along_axis(lambda row: np.convolve(row, kernel, mode="valid"), 1, padded)
-    padded = np.pad(out, ((radius, radius), (0, 0)), mode="edge")
-    out = np.apply_along_axis(lambda col: np.convolve(col, kernel, mode="valid"), 0, padded)
+    blurred = np.zeros_like(out)
+    for tap, weight in enumerate(kernel):
+        blurred += weight * padded[:, tap:tap + width]
+
+    padded = np.pad(blurred, ((radius, radius), (0, 0)), mode="edge")
+    out = np.zeros_like(blurred)
+    for tap, weight in enumerate(kernel):
+        out += weight * padded[tap:tap + height, :]
     return out.astype(np.float32)
 
 
