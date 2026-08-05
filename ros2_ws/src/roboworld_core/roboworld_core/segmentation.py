@@ -235,6 +235,53 @@ def fit_plane_ransac(
     return PlaneModel(normal, offset, float(inliers.mean()))
 
 
+def part_crop_box(
+    mask: np.ndarray, margin: float = 0.15, square: bool = True
+) -> tuple[int, int, int, int]:
+    """Window around the part, as ``(r0, r1, c0, c1)``.
+
+    A detector that resizes the whole frame to its input spends almost all of
+    that input on belt. Measured on the mock station: the part covers 1.8 % of a
+    640x480 frame, so at 256x256 it survives as ~1170 px and a 15 px defect
+    becomes 6 px. EfficientAD missed 24/24 defects that way while the CPU
+    reference, which works at native resolution inside the mask, missed none.
+
+    ``square`` keeps the aspect ratio so a 200x50 mm block is not stretched into
+    the square input; the margin leaves context around the edge, which an
+    anomaly detector needs to see the boundary as normal rather than as an edge
+    of the image.
+
+    Training and inference MUST use this same function -- a crop that differs
+    between them shifts the whole score distribution and silently invalidates
+    the calibrated anchor.
+    """
+    mask = np.asarray(mask, dtype=bool)
+    height, width = mask.shape
+    if not mask.any():
+        return 0, height, 0, width
+
+    rows, cols = np.nonzero(mask)
+    r0, r1 = int(rows.min()), int(rows.max()) + 1
+    c0, c1 = int(cols.min()), int(cols.max()) + 1
+
+    pad_r = int(round((r1 - r0) * margin))
+    pad_c = int(round((c1 - c0) * margin))
+    r0, r1 = r0 - pad_r, r1 + pad_r
+    c0, c1 = c0 - pad_c, c1 + pad_c
+
+    if square:
+        side = max(r1 - r0, c1 - c0)
+        centre_r, centre_c = (r0 + r1) // 2, (c0 + c1) // 2
+        r0, r1 = centre_r - side // 2, centre_r - side // 2 + side
+        c0, c1 = centre_c - side // 2, centre_c - side // 2 + side
+
+    # Slide the window back inside the image rather than clipping it, so the
+    # aspect ratio survives a part near the border.
+    r0, r1 = max(r0, 0), min(r1, height)
+    c0, c1 = max(c0, 0), min(c1, width)
+    return r0, r1, c0, c1
+
+
 def color_edge_gradient(color: np.ndarray, blur_sigma_px: float = 1.0) -> np.ndarray:
     """Edge strength of a colour frame, for :func:`snap_mask_to_color_edge`.
 
@@ -406,6 +453,7 @@ def segment_part(
     crown_band_m: float = 0.035,
     color_snap_px: int = 0,
     color_snap_min_gradient: float = 8.0,
+    refuse_on_size_mismatch: bool = True,
 ) -> Segmentation:
     """Segment the part from a frame using depth only.
 
@@ -432,6 +480,12 @@ def segment_part(
         color_snap_px: pull each candidate's boundary in onto the colour edge by
             at most this many pixels -- see :func:`snap_mask_to_color_edge`.
             ``0`` disables it and the depth boundary is used as-is.
+        refuse_on_size_mismatch: return nothing when the best candidate is
+            outside ``size_tolerance``. True for pose -- registering the model
+            against a hand gives a confidently wrong pick. False for inspection,
+            which still ranks candidates by size but must not be handed an empty
+            mask just because the defect changed the silhouette; the reason
+            records that it was selected anyway.
     """
     depth = np.asarray(frame.depth, dtype=np.float64)
     intr: CameraIntrinsics = frame.intrinsics
@@ -542,21 +596,30 @@ def segment_part(
             ),
         )
 
+    note = ""
     if expected_extents_m is not None and candidates[0].size_error > size_tolerance:
         best = candidates[0]
-        return Segmentation(
-            empty, np.zeros((0, 3)), plane, 0, candidates=candidates,
-            reason=(
-                f"no object matches the registered part: closest is "
-                f"{np.round(best.extents_m * 1000, 1)} mm vs expected "
-                f"{np.round(np.sort(expected)[::-1] * 1000, 1)} mm "
-                f"({best.size_error:.0%} off, tolerance {size_tolerance:.0%})"
-            ),
+        mismatch = (
+            f"closest is {np.round(best.extents_m * 1000, 1)} mm vs expected "
+            f"{np.round(np.sort(expected)[::-1] * 1000, 1)} mm "
+            f"({best.size_error:.0%} off, tolerance {size_tolerance:.0%})"
         )
+        if refuse_on_size_mismatch:
+            return Segmentation(
+                empty, np.zeros((0, 3)), plane, 0, candidates=candidates,
+                reason=f"no object matches the registered part: {mismatch}",
+            )
+        # Selected anyway, and said so. Inspection asks "is this part good?",
+        # and a part can fail its dimensions *because* of the defect: a chip or
+        # something stuck to it changes the silhouette. Refusing there hands the
+        # detector an empty mask, which scores 1.0 by convention -- an NG that
+        # never looked at the part, and is indistinguishable from one that did.
+        note = f"selected despite size mismatch: {mismatch}"
 
     chosen = candidates[0]
     return Segmentation(
-        chosen.mask, chosen.points, plane, chosen.pixel_count, candidates=candidates
+        chosen.mask, chosen.points, plane, chosen.pixel_count,
+        candidates=candidates, reason=note,
     )
 
 
