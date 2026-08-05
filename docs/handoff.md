@@ -96,8 +96,9 @@ station_roi:
 
 ### 커밋
 
-- `main` 최신 = 스테이션 ROI 커밋 — **아직 푸시 안 됨**
-- 원격 https://github.com/Shinhyoung/vision_robotworld 는 `55f2f87`까지 반영됨
+- `main` = `a128938` — GitHub https://github.com/Shinhyoung/vision_robotworld 에 푸시됨
+  - `3647da9` 스테이션 ROI 구현 (§3)
+  - `a128938` 실행 검증으로 드러난 status 불일치 문서화 (§10)
 
 ### 검증
 
