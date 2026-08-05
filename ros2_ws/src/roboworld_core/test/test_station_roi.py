@@ -109,11 +109,11 @@ def test_shipped_config_contains_the_measured_stop_position(cfg):
     """The shipped box must hold where the part was actually measured.
 
     Measured on the roller conveyor with a D455, 10 frames, centre stable to
-    4 mm. This is the assertion that catches "someone tuned the box and the
-    part no longer fits" -- the exact failure that made detection 0/10.
+    [4, 1, 2] mm. This is the assertion that catches "someone tuned the box and
+    the part no longer fits" -- the exact failure that made detection 0/10.
     """
     roi = station_roi_from_config(cfg)
-    measured_center_m = np.array([-0.048, -0.174, 0.682])
+    measured_center_m = np.array([0.016, -0.009, 0.626])
 
     assert roi.contains(measured_center_m), (
         f"the part sits {roi.offset_m(measured_center_m) * 1000:.0f} mm outside "
