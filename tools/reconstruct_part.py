@@ -149,6 +149,10 @@ def main() -> int:
                         help="rebuild from previously saved views; no camera needed")
     parser.add_argument("--single-view", type=int, default=None, metavar="N",
                         help="use only view N (0-based). Use when views disagree.")
+    parser.add_argument("--use-station-roi", action="store_true",
+                        help="isolate the part with pose.segmentation.station_roi "
+                             "instead of taking the largest object. Use when the "
+                             "rig is cluttered and the background wins")
     parser.add_argument("--level", action="store_true",
                         help="remove the measured top-face tilt. Correct for a "
                              "prismatic part (top parallel to bottom) that is "
@@ -170,14 +174,30 @@ def main() -> int:
     # the part's dimensions, so filtering candidates by dimensions we do not
     # have yet is circular -- and for a part being re-measured it would reject
     # exactly the tilted or unexpected placements worth capturing.
-    # The station ROI is off too: reconstruction views are shot on a turntable
-    # or by hand, not at the conveyor stop position.
+    #
+    # The station ROI is off by default for the same class of reason: views are
+    # normally shot on a turntable or by hand, not at the conveyor stop
+    # position. --use-station-roi turns it back on for the case the default
+    # cannot handle: a cluttered rig where the largest object above the plane is
+    # not the part. Unlike size, position says nothing about the dimensions
+    # being measured, so isolating by it stays non-circular.
     cfg = load_config().merged_with(
         {"pose": {"segmentation": {
             "identify_by_size": False,
-            "station_roi": {"enabled": False},
+            "station_roi": {"enabled": bool(args.use_station_roi)},
         }}}
     )
+    if args.use_station_roi:
+        from roboworld_core.segmentation import station_roi_from_config
+
+        roi = station_roi_from_config(cfg)
+        if roi is None:
+            print("error: --use-station-roi 이지만 pose.segmentation.station_roi 가 "
+                  "설정에 없습니다", file=sys.stderr)
+            return 2
+        print(f"스테이션 ROI 로 부품을 격리합니다: "
+              f"{np.round(roi.center_m * 1000).astype(int)} "
+              f"+-{np.round(roi.half_extents_m * 1000).astype(int)} mm")
     camera = cfg.section("camera")
     views_dir = paths.data_dir() / "captures" / args.part / "views"
 
