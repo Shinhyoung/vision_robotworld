@@ -90,6 +90,10 @@ def main() -> int:
                         help="auto-capture period in seconds")
     parser.add_argument("--target", type=int, default=40,
                         help="capture count to aim for (shown in the HUD)")
+    parser.add_argument("--use-station-roi", action="store_true",
+                        help="isolate the part with pose.segmentation.station_roi "
+                             "instead of taking the largest object. Use when the "
+                             "rig is cluttered and the background wins")
     parser.add_argument("--depth-range", type=float, nargs=2, default=(0.3, 1.5),
                         metavar=("NEAR", "FAR"))
     args = parser.parse_args()
@@ -108,14 +112,32 @@ def main() -> int:
     # Identification off: a part being registered for the first time has no
     # geometry to match against, and one being re-captured should not have its
     # training frames silently filtered by the previous model's dimensions.
-    # The station ROI is off for the same reason: capturing happens wherever the
-    # camera and part can be set up, not at the conveyor stop position.
+    #
+    # The station ROI is off by default for the same reason -- capturing happens
+    # wherever the camera and part can be set up. --use-station-roi turns it
+    # back on for the case the default cannot handle: a rig where the largest
+    # object above the plane is not the part. Measured on the roller conveyor,
+    # the default grabbed the conveyor structure ([363, 192, 120] mm) instead of
+    # the part ([207, 60, 53] mm), so every captured frame would have trained
+    # the detector on background. Position carries no information about the
+    # dimensions being measured, so isolating by it stays non-circular.
     cfg = load_config().merged_with(
         {"pose": {"segmentation": {
             "identify_by_size": False,
-            "station_roi": {"enabled": False},
+            "station_roi": {"enabled": bool(args.use_station_roi)},
         }}}
     )
+    if args.use_station_roi:
+        from roboworld_core.segmentation import station_roi_from_config
+
+        roi = station_roi_from_config(cfg)
+        if roi is None:
+            print("error: --use-station-roi 이지만 pose.segmentation.station_roi 가 "
+                  "설정에 없습니다", file=sys.stderr)
+            return 2
+        print(f"스테이션 ROI 로 부품을 격리합니다: "
+              f"{np.round(roi.center_m * 1000).astype(int)} "
+              f"+-{np.round(roi.half_extents_m * 1000).astype(int)} mm")
     camera = cfg.section("camera")
     try:
         source = RealSenseSource(

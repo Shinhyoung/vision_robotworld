@@ -269,17 +269,24 @@ class DatasetSource:
 class Analyzer:
     """Lazily builds and caches per-part inspection / pose backends."""
 
-    def __init__(self, cfg, fit_frames: int) -> None:
+    def __init__(self, cfg, fit_frames: int, inspection_backend: str | None = None) -> None:
         self.cfg = cfg
         self.fit_frames = fit_frames
+        #: ``None`` defers to the config, which resolves per part -- one part
+        #: can run EfficientAD while the rest use the CPU reference.
+        self.inspection_backend = inspection_backend
         self._inspection: dict[str, object] = {}
         self._pose: dict[str, object] = {}
         self._mesh: dict[str, object] = {}
 
     def inspection(self, part_id: str):
         if part_id not in self._inspection:
-            backend = build_inspection(self.cfg, part_id, backend="statistical")
+            backend = build_inspection(self.cfg, part_id,
+                                       backend=self.inspection_backend)
             if not backend.is_fitted:
+                # EfficientAD reports fitted when its checkpoint exists, so this
+                # only ever fits the statistical backend -- which is what wants
+                # fitting here.
                 print(f"  fitting inspection for '{part_id}' "
                       f"({self.fit_frames} frames)...", flush=True)
                 station = MockStation(
@@ -349,10 +356,15 @@ def build_canvas(cfg, frame, analyzer: Analyzer, show_inspect: bool, show_pose: 
             panels.append(tint_mask(apply_gain(frame.color, gain), segmentation.mask))
             hud.append((f"segmented {segmentation.pixel_count} px", _DIM))
         else:
-            # Identification refused everything. Showing a blank panel leaves the
-            # operator with no idea where to aim, so paint the closest candidate
-            # in red and report what it measured -- that is what tells you
-            # whether to move the camera or the part.
+            # This panel follows the POSE path, which refuses on a size
+            # mismatch. Inspection deliberately does not (see
+            # inspection._segmentation_kwargs), so it can still be scoring the
+            # part while this says it was refused -- label whose refusal it is,
+            # or the two lines read as a contradiction.
+            #
+            # Showing a blank panel would leave the operator with no idea where
+            # to aim, so paint the closest candidate in red and report what it
+            # measured: that is what says whether to move the camera or the part.
             best = segmentation.selected
             if best is not None:
                 panels.append(
@@ -363,17 +375,19 @@ def build_canvas(cfg, frame, analyzer: Analyzer, show_inspect: bool, show_pose: 
                     # failure because the fix is different: move the part, the
                     # camera or the ROI, not the tolerance.
                     hud.append((
-                        f"OUTSIDE STATION  {best.roi_offset_m * 1000:.0f} mm out, "
-                        f"at {np.round(best.center_m * 1000).astype(int)} mm", _RED,
+                        f"포즈 거부: 스테이션 밖 {best.roi_offset_m * 1000:.0f} mm "
+                        f"(중심 {np.round(best.center_m * 1000).astype(int)} mm)", _RED,
                     ))
                 else:
                     hud.append((
-                        f"NO MATCH  closest {np.round(best.extents_m * 1000).astype(int)} mm "
-                        f"({best.size_error:.0%} off)", _RED,
+                        f"포즈 거부: 치수 {best.size_error:.0%} 초과 "
+                        f"({np.round(best.extents_m * 1000).astype(int)} mm)  "
+                        f"— 검사는 이 후보로 계속", _RED,
                     ))
             else:
                 panels.append(apply_gain(frame.color, gain))
-                hud.append((f"NO OBJECT  {segmentation.reason[:52]}", _RED))
+                hud.append((f"물체 없음 — 검사·포즈 모두 불가  "
+                            f"{segmentation.reason[:40]}", _RED))
             hud.append((f"candidates {len(segmentation.candidates)}", _DIM))
 
         # Aiming the camera against an invisible acceptance volume is guesswork,
@@ -385,26 +399,33 @@ def build_canvas(cfg, frame, analyzer: Analyzer, show_inspect: bool, show_pose: 
                 f"@ {np.round(roi.center_m * 1000).astype(int)} mm", _DIM,
             ))
 
+    inspected = None
     if show_inspect:
-        result = analyzer.inspection(frame.part_id).infer(frame)
+        inspected = analyzer.inspection(frame.part_id).infer(frame)
         panels.append(
             anomaly_view(
-                result.anomaly_map
-                if result.anomaly_map is not None
+                inspected.anomaly_map
+                if inspected.anomaly_map is not None
                 else np.zeros(frame.depth.shape, dtype=np.float32),
                 segmentation.mask,
-                result.defect_mask,
+                inspected.defect_mask,
             )
         )
-        verdict = "OK" if result.is_good else "NG"
+        verdict = "OK  양품" if inspected.is_good else "NG  불량"
         hud.append((
-            f"inspect {verdict}  score {result.anomaly_score:.3f} / thr {result.threshold:.3f}",
-            _GREEN if result.is_good else _RED,
+            f"[{verdict}]  score {inspected.anomaly_score:.3f} / "
+            f"thr {inspected.threshold:.3f}  ({inspected.backend})",
+            _GREEN if inspected.is_good else _RED,
         ))
 
-    # Pose is independent of inspection: a part registered from captures has
-    # geometry but no trained detector, and that combination must still work.
-    if show_pose:
+    # NG skips pose, exactly as the pipeline does (skip_pose_when_ng): a part
+    # about to be ejected has no pose to publish, and showing one invites
+    # reading a number the robot department will never receive.
+    if show_pose and inspected is not None and not inspected.is_good:
+        panels.append(tint_mask(apply_gain(frame.color, gain), segmentation.mask,
+                                tint=(255, 70, 70)))
+        hud.append(("포즈 생략 — 불량은 집지 않는다 (STATUS_NG)", _RED))
+    elif show_pose:
         estimate = analyzer.pose(frame.part_id).run(frame)
         if estimate.valid:
             # Re-project the model at the estimated pose. This is the panel that
@@ -433,7 +454,7 @@ def build_canvas(cfg, frame, analyzer: Analyzer, show_inspect: bool, show_pose: 
             ))
         else:
             panels.append(apply_gain(frame.color, gain))
-            hud.append((f"pose rejected: {estimate.message[:44]}", _RED))
+            hud.append((f"포즈 거부: {estimate.message[:44]}", _RED))
 
     canvas = hstack_panels(panels)
     return canvas, hud
@@ -648,6 +669,9 @@ def main() -> int:
                              "(default: 2.2 for mock, 1.0 for a real camera)")
     parser.add_argument("--fps", type=float, default=10.0, help="mjpeg target rate")
     parser.add_argument("--port", type=int, default=8080, help="mjpeg port")
+    parser.add_argument("--inspection-backend", default=None,
+                        choices=("statistical", "efficientad", "stub"),
+                        help="detector to run (default: inspection.backend from config)")
     parser.add_argument("--fit-frames", type=int, default=25)
     parser.add_argument("--max-frames", type=int, default=0, help="0 = unlimited")
     parser.add_argument("--duration", type=float, default=0.0, help="seconds, 0 = unlimited")
@@ -704,7 +728,7 @@ def main() -> int:
         # and brightening it again just blows out the highlights.
         args.gain = 1.0 if args.source == "realsense" else 2.2
 
-    analyzer = Analyzer(cfg, args.fit_frames)
+    analyzer = Analyzer(cfg, args.fit_frames, args.inspection_backend)
     if args.inspect:
         analyzer.inspection(args.part)  # fit up front, not mid-stream
 

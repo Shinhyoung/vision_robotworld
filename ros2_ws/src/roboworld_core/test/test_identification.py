@@ -313,3 +313,38 @@ def test_colour_snap_leaves_a_featureless_boundary_alone(cfg, intrinsics):
     flat = np.full_like(frame.color, 128)
 
     assert np.array_equal(snap_mask_to_color_edge(mask, flat, max_shift_px=3), mask)
+
+
+# --- inspection must not be starved by the size gate ----------------------
+def test_size_gate_refuses_for_pose_but_not_for_inspection(cfg, intrinsics):
+    """A defect changes the silhouette, so the size gate refuses the very part
+    inspection exists to look at.
+
+    Measured on the rig: a part with a foreign object on it read 83 mm wide
+    against 62 mm, the size gate refused it, and inspection was handed an empty
+    mask -- which scores 1.0 by convention. The NG was right by accident; the
+    detector never saw the part.
+    """
+    from roboworld_core.segmentation import segment_part
+
+    frame, _, _ = build_scene(cfg, intrinsics)
+    # Expect a part half the size of the real one: a guaranteed mismatch.
+    wrong = np.array([0.100, 0.028, 0.028])
+
+    refused = segment_part(frame, expected_extents_m=wrong, size_tolerance=0.25)
+    kept = segment_part(frame, expected_extents_m=wrong, size_tolerance=0.25,
+                        refuse_on_size_mismatch=False)
+
+    assert not refused.ok, "pose must still refuse an object of the wrong size"
+    assert kept.ok, "inspection must still get pixels to score"
+    assert kept.pixel_count == refused.candidates[0].pixel_count
+    assert "size mismatch" in kept.reason, "the mismatch must stay visible"
+
+
+def test_inspection_factory_does_not_refuse_on_size(cfg):
+    """The flag has to reach the backends -- they call segment_part directly."""
+    from roboworld_core.inspection import _segmentation_kwargs as inspection_kwargs
+    from roboworld_core.pose import _segmentation_kwargs as pose_kwargs
+
+    assert inspection_kwargs(cfg, PART_ID)["refuse_on_size_mismatch"] is False
+    assert pose_kwargs(cfg, PART_ID).get("refuse_on_size_mismatch", True) is True

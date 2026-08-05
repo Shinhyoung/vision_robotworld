@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 from .base import InspectionBackend, InspectionSettings
@@ -17,8 +18,25 @@ __all__ = [
     "EfficientAdUnavailable",
     "StubBackend",
     "build_backend",
+    "backend_for",
     "model_path_for",
 ]
+
+
+def backend_for(cfg, part_id: str = "") -> str:
+    """Which detector this part uses.
+
+    ``parts.<id>.inspection_backend`` overrides the global ``inspection.backend``.
+    Parts do not arrive at the same readiness: EfficientAD needs a GPU and a
+    trained checkpoint *per part*, so a line can have one part running the
+    production detector while the rest still fall back to the CPU reference.
+    Forcing one global choice would mean either holding the ready part back or
+    breaking the others with a missing checkpoint.
+    """
+    entry = cfg.get(f"parts.{part_id}", None) if part_id else None
+    if isinstance(entry, Mapping) and entry.get("inspection_backend"):
+        return str(entry["inspection_backend"])
+    return str(cfg.get("inspection.backend", "statistical"))
 
 
 def model_path_for(cfg, backend: str, part_id: str) -> Path | None:
@@ -45,7 +63,7 @@ def build_backend(cfg, part_id: str = "", backend: str | None = None) -> Inspect
         EfficientAdUnavailable: EfficientAD requested but unusable.
     """
     settings = InspectionSettings.from_config(cfg)
-    name = (backend or cfg.get("inspection.backend", "statistical")).lower()
+    name = (backend or backend_for(cfg, part_id)).lower()
     segmentation_kwargs = _segmentation_kwargs(cfg, part_id)
 
     if name == "stub":
@@ -79,6 +97,7 @@ def build_backend(cfg, part_id: str = "", backend: str | None = None) -> Inspect
             device=str(section.get("device", "cuda")),
             model_size=str(section.get("model_size", "small")),
             segmentation_kwargs=segmentation_kwargs,
+            crop_margin=float(section.get("crop_margin", 0.15)),
         )
 
     raise ValueError(
@@ -110,8 +129,15 @@ def _segmentation_kwargs(cfg, part_id: str = "") -> dict:
         # the line would grade one part and pick another.
         "station_roi": station_roi_from_config(cfg),
     }
-    # Inspecting the wrong object is as bad as posing it: the anomaly statistics
-    # would be computed over a hand or a neighbouring part.
+    # Size still RANKS candidates -- inspecting a hand or a neighbouring part
+    # would compute the anomaly statistics over the wrong thing -- but it must
+    # not REJECT. A defect changes the silhouette (a chip removes material,
+    # something stuck on adds it), so the size gate refuses exactly the parts
+    # worth inspecting, and an empty mask scores 1.0 by convention: an NG that
+    # never looked at the part. Measured on the rig: a part with a foreign
+    # object read 83 mm wide against 62 mm, was refused, and the "defect" score
+    # of 1.000 came from the empty-ROI rule rather than the detector.
+    kwargs["refuse_on_size_mismatch"] = False
     kwargs.update(_crown_kwargs(section))
     if part_id and section.get("identify_by_size", True):
         kwargs["expected_extents_m"] = expected_extents_for(cfg, part_id)
