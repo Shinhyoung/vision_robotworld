@@ -17,7 +17,14 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .config import ConfigError
-from .imageops import binary_dilate, binary_erode, connected_components
+from .imageops import (
+    binary_dilate,
+    binary_erode,
+    connected_components,
+    gaussian_blur,
+    sobel_magnitude,
+    to_gray,
+)
 from .types import CameraIntrinsics, Frame
 
 
@@ -228,6 +235,84 @@ def fit_plane_ransac(
     return PlaneModel(normal, offset, float(inliers.mean()))
 
 
+def snap_mask_to_color_edge(
+    mask: np.ndarray,
+    color: np.ndarray,
+    max_shift_px: int = 3,
+    min_gradient: float = 8.0,
+    blur_sigma_px: float = 1.0,
+) -> np.ndarray:
+    """Move a depth mask's boundary onto the nearest strong colour edge.
+
+    A stereo camera fattens: the matcher paints object depth onto a band of
+    background pixels around the silhouette. Measured on a D455 capture of a
+    part known to be 49 mm wide, the mask read ~60 mm, and neither averaging
+    (the skirt is stable across 10 frames) nor resolution (848x480 was worse)
+    removes it -- the depth boundary is simply in the wrong place. The colour
+    image has it in the right place.
+
+    **Colour never decides membership.** Depth already chose which pixels are
+    part; this only relocates an existing boundary, by at most
+    ``max_shift_px``, and only towards a gradient stronger than
+    ``min_gradient``. Where no such edge exists the depth boundary stands. That
+    bound is what stops a stain or a chip touching the rim from carving a piece
+    out of the part -- which is why segmentation otherwise refuses colour: the
+    defects Inspection hunts for are colour features too.
+
+    The search runs **inward only**. Fattening can only ever add pixels, so
+    there is no reason to let the boundary travel outward -- and every reason
+    not to: allowed both ways on a roller conveyor it locked onto the rollers'
+    own specular edges and made the part 23 % wider instead of 9 % (measured,
+    the same 10 frames). Inward-only took the worst axis from 5.1 % to 2.7 %.
+    """
+    mask = np.asarray(mask, dtype=bool)
+    if not mask.any() or max_shift_px < 1:
+        return mask
+
+    height, width = mask.shape
+    gradient = sobel_magnitude(gaussian_blur(to_gray(color), blur_sigma_px))
+
+    # Outward normal from a smoothed indicator: the field falls off outward, so
+    # the negated gradient points out of the object.
+    field = gaussian_blur(mask.astype(np.float32), max(blur_sigma_px, 1.5))
+    dy, dx = np.gradient(field.astype(np.float64))
+    magnitude = np.hypot(dx, dy)
+
+    edge = mask & ~binary_erode(mask, 1)
+    rows, cols = np.nonzero(edge & (magnitude > 1e-6))
+    if len(rows) == 0:
+        return mask
+
+    normal_x = -dx[rows, cols] / magnitude[rows, cols]
+    normal_y = -dy[rows, cols] / magnitude[rows, cols]
+
+    offsets = np.arange(-max_shift_px, 1)
+    sample_r = np.clip(
+        np.rint(rows[:, None] + normal_y[:, None] * offsets).astype(np.int64), 0, height - 1
+    )
+    sample_c = np.clip(
+        np.rint(cols[:, None] + normal_x[:, None] * offsets).astype(np.int64), 0, width - 1
+    )
+    profile = gradient[sample_r, sample_c]
+
+    chosen = profile.argmax(axis=1)
+    strong = profile[np.arange(len(chosen)), chosen] >= min_gradient
+    # No edge worth moving to -> stay put (offset 0 is the last index).
+    chosen = np.where(strong, chosen, len(offsets) - 1)
+
+    core = binary_erode(mask, max_shift_px)
+    if not core.any():
+        return mask  # too thin to reshape safely
+
+    refined = core.copy()
+    inside = offsets[None, :] <= offsets[chosen][:, None]
+    refined[sample_r[inside], sample_c[inside]] = True
+    # The rays are discrete, so close the pinholes they leave between them.
+    refined = binary_erode(binary_dilate(refined, 1), 1)
+    # Never let the boundary travel further than it was allowed to.
+    return refined & binary_dilate(mask, max_shift_px)
+
+
 def refine_support_to_crowns(
     points: np.ndarray,
     plane: PlaneModel,
@@ -288,6 +373,8 @@ def segment_part(
     crown_percentile: float = 95.0,
     crown_slab_m: float = 0.003,
     crown_band_m: float = 0.035,
+    color_snap_px: int = 0,
+    color_snap_min_gradient: float = 8.0,
 ) -> Segmentation:
     """Segment the part from a frame using depth only.
 
@@ -311,6 +398,9 @@ def segment_part(
         support_crowns: refit the support plane onto the crowns of a ribbed
             surface -- see :func:`refine_support_to_crowns`. Leave off for a
             flat belt, where the plane already is the support surface.
+        color_snap_px: pull each candidate's boundary in onto the colour edge by
+            at most this many pixels -- see :func:`snap_mask_to_color_edge`.
+            ``0`` disables it and the depth boundary is used as-is.
     """
     depth = np.asarray(frame.depth, dtype=np.float64)
     intr: CameraIntrinsics = frame.intrinsics
@@ -370,6 +460,14 @@ def segment_part(
         if sizes[label] < min_cluster_points:
             continue
         component = labels == label
+        if color_snap_px > 0:
+            snapped = snap_mask_to_color_edge(
+                component, frame.color, color_snap_px, color_snap_min_gradient
+            )
+            # Only take it if something is left; a boundary this thin is not
+            # worth reshaping.
+            if snapped.sum() >= min_cluster_points:
+                component = snapped
         component_points = points[component[rows, cols]]
         candidate = Candidate(
             component, component_points, measure_extents(component_points, plane)
@@ -464,11 +562,19 @@ def segment_from_config(
 
 
 def _crown_kwargs(section) -> dict:
-    """Support-surface settings from a ``pose.segmentation`` section."""
+    """Support-surface and boundary-refinement settings."""
+    snap = section.get("color_edge_snap", None)
+    extra = {}
+    if isinstance(snap, Mapping) and snap.get("enabled", False):
+        extra = {
+            "color_snap_px": int(snap.get("max_shift_px", 3)),
+            "color_snap_min_gradient": float(snap.get("min_gradient", 8.0)),
+        }
     surface = section.get("support_surface", None)
     if not isinstance(surface, Mapping):
-        return {}
+        return extra
     return {
+        **extra,
         "support_crowns": str(surface.get("mode", "plane")).lower() == "crowns",
         "crown_percentile": float(surface.get("crown_percentile", 95.0)),
         "crown_slab_m": float(surface.get("crown_slab_m", 0.003)),

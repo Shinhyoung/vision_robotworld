@@ -55,6 +55,33 @@
         plane_ransac_iterations: 120
         plane_distance_threshold_m: 0.006
 
+        # Pull the depth mask's boundary in onto the colour edge.
+        #
+        # A stereo camera fattens: the matcher paints object depth onto a band
+        # of background pixels around the silhouette. Measured on a part known
+        # to be 49 mm wide, the depth mask read 53.6 mm, and the skirt is stable
+        # across frames (so averaging cannot remove it) and worse at 848x480
+        # (so resolution cannot either). The colour image has the boundary in
+        # the right place.
+        #
+        # Depth still decides WHICH pixels are the part; this only relocates an
+        # existing boundary, inward, by at most max_shift_px. That bound is what
+        # keeps a stain or a chip on the rim from carving a piece out of the
+        # part -- segmentation otherwise refuses colour precisely because the
+        # defects Inspection hunts for are colour features too.
+        #
+        # Measured over 10 frames against the true 230 x 49 x 51 mm:
+        #   off                       worst axis 5.1 %
+        #   inward, max_shift 3 px    worst axis 2.7 %
+        #   both directions           worst axis 18.6 % -- it locked onto the
+        #                             rollers' own specular edges
+        color_edge_snap:
+          enabled: true
+          max_shift_px: 3
+          # Sobel magnitude a candidate edge must reach before the boundary is
+          # moved onto it. Below this the depth boundary stands.
+          min_gradient: 8.0
+
         # What the part is resting on. Every height is measured from this, so
         # putting it in the wrong place biases every height.
         #

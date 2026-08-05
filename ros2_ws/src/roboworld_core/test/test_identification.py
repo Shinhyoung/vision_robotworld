@@ -254,3 +254,62 @@ def test_crown_refit_declines_when_there_is_no_support_to_fit():
 
     plane = PlaneModel(np.array([0.0, 0.0, -1.0]), 0.60, 0.5)
     assert refine_support_to_crowns(np.zeros((10, 3)), plane) is None
+
+
+# --- colour edge snap ----------------------------------------------------
+def _fattened(mask, pixels=3):
+    """A depth mask as a stereo camera delivers it: a few pixels too big."""
+    from roboworld_core.segmentation import binary_dilate
+
+    return binary_dilate(np.asarray(mask, bool), pixels)
+
+
+def test_colour_snap_pulls_a_fattened_mask_back_onto_the_part(cfg, intrinsics):
+    """The whole point: recover the silhouette depth reports too generously."""
+    from roboworld_core.segmentation import snap_mask_to_color_edge
+
+    frame, labels, _ = build_scene(cfg, intrinsics)
+    truth = labels == 1
+    fat = _fattened(truth, 3)
+
+    snapped = snap_mask_to_color_edge(fat, frame.color, max_shift_px=3)
+
+    def iou(a, b):
+        return (a & b).sum() / (a | b).sum()
+
+    assert iou(snapped, truth) > iou(fat, truth), "snap did not improve on the fat mask"
+    assert snapped.sum() < fat.sum(), "snap must shrink a fattened mask"
+
+
+def test_colour_snap_never_grows_the_mask(cfg, intrinsics):
+    """Inward-only. Allowed outward it locked onto the conveyor's own edges."""
+    from roboworld_core.segmentation import snap_mask_to_color_edge
+
+    frame, labels, _ = build_scene(cfg, intrinsics)
+    mask = labels == 1
+    snapped = snap_mask_to_color_edge(mask, frame.color, max_shift_px=4)
+
+    assert not (snapped & ~mask).any(), "the boundary moved outward"
+
+
+def test_colour_snap_respects_its_shift_bound(cfg, intrinsics):
+    """A defect on the rim must not be able to carve out the part."""
+    from roboworld_core.segmentation import binary_erode, snap_mask_to_color_edge
+
+    frame, labels, _ = build_scene(cfg, intrinsics)
+    mask = labels == 1
+    snapped = snap_mask_to_color_edge(mask, frame.color, max_shift_px=2)
+
+    # Nothing further in than the bound may be removed.
+    assert (binary_erode(mask, 2) & ~snapped).sum() == 0
+
+
+def test_colour_snap_leaves_a_featureless_boundary_alone(cfg, intrinsics):
+    """No edge to snap to -> keep the depth boundary rather than invent one."""
+    from roboworld_core.segmentation import snap_mask_to_color_edge
+
+    frame, labels, _ = build_scene(cfg, intrinsics)
+    mask = labels == 1
+    flat = np.full_like(frame.color, 128)
+
+    assert np.array_equal(snap_mask_to_color_edge(mask, flat, max_shift_px=3), mask)
