@@ -15,6 +15,7 @@ statistical backend fits on CPU in seconds and is what CI uses.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -83,6 +84,8 @@ def train_efficientad(cfg, part_id: str, args: argparse.Namespace) -> int:
         from anomalib.data import Folder
         from anomalib.engine import Engine
         from anomalib.models import EfficientAd
+
+        from roboworld_core.inspection.efficientad import EfficientAdBackend
     except ImportError as exc:
         print(
             f"error: anomalib is not installed ({exc}).\n"
@@ -123,7 +126,182 @@ def train_efficientad(cfg, part_id: str, args: argparse.Namespace) -> int:
     model_path.parent.mkdir(parents=True, exist_ok=True)
     engine.trainer.save_checkpoint(str(model_path))
     print(f"  EfficientAD checkpoint ({size[0]}x{size[1]}) -> {model_path}")
+
+    anchor = _calibrate_anchor(cfg, model, normal_dir, tuple(size))
+    anchor_path = EfficientAdBackend.anchor_path(model_path)
+    anchor_path.write_text(json.dumps({
+        "anchor": anchor,
+        "images": len(sorted(normal_dir.glob("*.png"))),
+        "percentile": float(cfg.get("inspection.efficientad.norm_high_percentile", 95.0)),
+        "safety_factor": float(cfg.get("inspection.efficientad.safety_factor", 0.7)),
+    }, indent=2), encoding="utf-8")
+    print(f"  정규화 기준값 {anchor:.4f} -> {anchor_path}")
+
+    _report_separation(cfg, model, dataset_dir, tuple(size), anchor)
     return 0
+
+
+def _report_separation(cfg, model, dataset_dir: Path, image_size, anchor: float) -> None:
+    """Score the held-out folders and report where a threshold can sit.
+
+    Reported, never applied. ``abnormal/`` is validation data: choosing the
+    threshold that happens to score best on it is fitting to the test set, and
+    the number it produces would no longer mean anything. What a human needs to
+    see is whether the two distributions separate at all -- if they overlap, no
+    threshold fixes it and the answer is more or better training data.
+    """
+    import numpy as np
+
+    scores = {}
+    for folder in ("normal_test", "abnormal"):
+        paths = sorted((dataset_dir / folder).glob("*.png"))
+        if paths:
+            scores[folder] = np.array([
+                min(0.5 * _score_png(model, p, image_size) / anchor, 1.0) for p in paths
+            ])
+
+    good, bad = scores.get("normal_test"), scores.get("abnormal")
+    if good is None or not len(good):
+        print("  검증용 양품(normal_test)이 없어 분리도를 잴 수 없습니다")
+        return
+
+    threshold = float(cfg.get("inspection.threshold", 0.5))
+    print(f"\n  검증 (임계값 {threshold})")
+    print(f"    양품 {len(good):3d}장  중앙값 {np.median(good):.3f}  최대 {good.max():.3f}"
+          f"   과검출 {int((good > threshold).sum())}/{len(good)}")
+    if bad is None or not len(bad):
+        print("    불량 샘플이 없어 미검출은 잴 수 없습니다 "
+              "(tools/capture_part.py --defect 로 촬영)")
+        return
+
+    print(f"    불량 {len(bad):3d}장  중앙값 {np.median(bad):.3f}  최소 {bad.min():.3f}"
+          f"   미검출 {int((bad <= threshold).sum())}/{len(bad)}")
+    if bad.min() > good.max():
+        print(f"    분리됨 — {good.max():.3f} ~ {bad.min():.3f} 사이 어디든 임계값 가능")
+    else:
+        best = min(
+            ((t, int((good > t).sum()), int((bad <= t).sum()))
+             for t in np.arange(0.05, 1.0, 0.01)),
+            key=lambda x: x[1] + x[2],
+        )
+        print(f"    ⚠ 겹침 — 양품 최대 {good.max():.3f} > 불량 최소 {bad.min():.3f}. "
+              "어떤 임계값에도 오류가 남습니다")
+        print(f"    참고: 임계값 {best[0]:.2f} 이면 과검출 {best[1]}/{len(good)}, "
+              f"미검출 {best[2]}/{len(bad)} — inspection.threshold 를 직접 정하세요")
+
+
+def _score_png(model, path: Path, image_size) -> float:
+    import numpy as np
+    import torch
+    from PIL import Image
+
+    from roboworld_core.imageops import resize_nearest
+    from roboworld_core.inspection.efficientad import _extract_map, _inference_module
+
+    image = np.asarray(Image.open(path).convert("RGB"))
+    resized = resize_nearest(image, image_size).astype(np.float32) / 255.0
+    device = next(model.parameters()).device
+    tensor = torch.from_numpy(resized).permute(2, 0, 1).unsqueeze(0).to(device)
+    was_training = model.training
+    model.eval()
+    with torch.no_grad():
+        raw = float(np.max(_extract_map(_inference_module(model)(tensor))))
+    model.train(was_training)
+    return raw
+
+
+def _calibrate_anchor(cfg, model, normal_dir: Path, image_size: tuple[int, int]) -> float:
+    """Anchor the [0, 1] score scale on the training set's own score level.
+
+    anomalib emits an unbounded anomaly map and, since 2.x, publishes no
+    threshold of its own -- ``model.pixel_threshold`` is ``None``. Without an
+    anchor the raw map becomes the score: measured on mock guide_block a good
+    part scored 0.665 against a 0.5 threshold, so every good part was rejected.
+
+    Same rule as the statistical backend: score 0.5 lands at ``safety_factor``
+    times the configured upper percentile of the *training* scores. Anchored on
+    the level, not the spread -- a wider normal set must not drag defects under
+    the threshold (see docs/handoff.md section 8).
+    """
+    import numpy as np
+    import torch
+    from PIL import Image
+
+    from roboworld_core.imageops import resize_nearest
+    from roboworld_core.inspection.efficientad import _extract_map, _inference_module
+
+    # EfficientAD's own numbers. Borrowing the statistical backend's put score
+    # 0.5 above most real defects: the two detectors place defects at different
+    # multiples of the normal level, so one constant cannot serve both.
+    percentile = float(cfg.get("inspection.efficientad.norm_high_percentile", 95.0))
+    safety = float(cfg.get("inspection.efficientad.safety_factor", 0.7))
+
+    # EfficientAd's forward branches on training mode -- in train mode it takes
+    # a batch and returns losses, and feeding it a bare tensor fails inside
+    # imagenet_norm_batch. Score the way the runtime backend will.
+    was_training = model.training
+    model.eval()
+
+    device = next(model.parameters()).device
+    paths = sorted(normal_dir.glob("*.png"))
+    scores = []
+    for path in paths:
+        image = np.asarray(Image.open(path).convert("RGB"))
+        resized = resize_nearest(image, image_size).astype(np.float32) / 255.0
+        tensor = torch.from_numpy(resized).permute(2, 0, 1).unsqueeze(0).to(device)
+        with torch.no_grad():
+            scores.append(float(np.max(_extract_map(_inference_module(model)(tensor)))))
+
+    model.train(was_training)
+    if not scores:
+        raise ValueError(f"no PNGs to calibrate on in {normal_dir}")
+
+    scores = np.asarray(scores, dtype=np.float64)
+    keep, rejected = _reject_high_outliers(
+        scores, float(cfg.get("inspection.training.outlier_z_max", 3.5))
+    )
+    print(f"  학습 점수 분포  중앙값 {np.median(scores):.4f}  "
+          f"p{percentile:.0f} {np.percentile(scores, percentile):.4f}  "
+          f"최대 {np.max(scores):.4f}  ({len(scores)}장)")
+
+    if rejected:
+        print(f"  이상치 {len(rejected)}장 제외 (캘리브레이션에서만):")
+        for index, z in rejected:
+            print(f"    {paths[index].name}  점수 {scores[index]:.4f}  "
+                  f"(중앙값의 {scores[index] / max(np.median(scores), 1e-9):.1f}배, z={z:.1f})")
+        print("    ↑ 손이 들어갔거나 분할이 어긋난 프레임일 수 있습니다. "
+              "확인 후 원본에서 지우는 것을 권합니다.")
+        kept = scores[keep]
+        print(f"  제외 후  중앙값 {np.median(kept):.4f}  "
+              f"p{percentile:.0f} {np.percentile(kept, percentile):.4f}  ({len(kept)}장)")
+        scores = kept
+
+    return float(safety * np.percentile(scores, percentile))
+
+
+def _reject_high_outliers(scores: np.ndarray, z_max: float = 3.5):
+    """Flag training frames scoring wildly above the rest.
+
+    The anchor is a high percentile of the training scores, so a handful of
+    contaminated frames drag it up and push real defects under the threshold.
+    Measured on 64 real captures: one frame with the operator's hand still in
+    shot scored 1.70 against a median of 0.075 -- 23x -- which lifted p95 from
+    0.219 to 0.347 and made the detector miss 12 of 19 defects.
+
+    Modified z-score on the median absolute deviation, so the test itself is not
+    moved by the outliers it is looking for. **High side only**: a frame that
+    scores low is a particularly clean part, not contamination.
+    """
+    median = float(np.median(scores))
+    mad = float(np.median(np.abs(scores - median)))
+    if mad <= 0.0:  # scores nearly identical -- nothing to reject against
+        return np.ones(len(scores), dtype=bool), []
+
+    z = 0.6745 * (scores - median) / mad
+    keep = z <= z_max
+    if keep.sum() < 3:  # refuse to calibrate on almost nothing
+        return np.ones(len(scores), dtype=bool), []
+    return keep, [(int(i), float(z[i])) for i in np.flatnonzero(~keep)]
 
 
 def main() -> int:

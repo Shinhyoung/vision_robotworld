@@ -15,6 +15,13 @@ data/
 # Committing it would hand everyone else a broken reference.
 ros2_ws/src/roboworld_bringup/config/parts_local.yaml
 
+# anomalib writes these into the working directory when training runs:
+# the ImageNette set EfficientAD distils against (~1.5 GB, downloaded on first
+# run) and per-run Lightning output (~1 GB). Both are reproducible from
+# `tools/train_inspection.py --backend efficientad`.
+datasets/
+results/
+
 # Python
 __pycache__/
 *.py[cod]

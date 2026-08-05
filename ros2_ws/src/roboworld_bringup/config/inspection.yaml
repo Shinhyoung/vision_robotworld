@@ -52,13 +52,66 @@
         model_path: "${ROBOWORLD_DATA_DIR}/models/statistical_${part_id}.npz"
 
       efficientad:
+        # Score normalisation, same shape as the statistical backend's but with
+        # its OWN numbers -- the two detectors put defects at completely
+        # different multiples of the normal level, so sharing one safety_factor
+        # is not a saving, it is a miscalibration. Measured on 64 real captures
+        # of new_part: borrowing statistical's 1.6 put score 0.5 above most real
+        # defects (min 0.36) and missed 3 of 19; the separation itself was fine.
+        #
+        # Lower safety_factor if defects slip through, raise it if good parts are
+        # rejected. Retrain after changing it -- the anchor is baked into the
+        # .norm.json beside the checkpoint.
+        #
+        # (95, 4.0) chosen by sweeping both over measured raw scores of the
+        # medium model on 82 real single-face captures of new_part: 0 false
+        # rejects of 21 and 0 misses of 19, with no frame clipped at 1.0.
+        # Neighbouring values were worse in a specific way -- 3.0 clipped 5
+        # frames, 5.0 started missing defects -- and clipping is the one to
+        # avoid: once a score saturates, "faint defect" and "blatant defect"
+        # read the same and the margin can no longer be monitored.
+        #
+        # This constant belongs to a (model_size, dataset) pair. Re-sweep after
+        # changing either; the small model wanted a value 6x lower.
+        norm_high_percentile: 95.0
+        safety_factor: 4.0
         model_path: "${ROBOWORLD_DATA_DIR}/models/efficientad_${part_id}.ckpt"
         image_size: [256, 256]
         device: "cuda"
-        model_size: "small"     # anomalib EfficientAd: "small" | "medium"
+        # "medium" is ~4x the teacher/student capacity of "small". Measured
+        # on 82 real single-face captures, "small" left the raw scores
+        # overlapping before any normalisation -- a good part reached 0.397
+        # where the faintest defect sat at 0.310 -- so no threshold could
+        # separate them. Capacity is the lever there, not calibration.
+        model_size: "medium"    # anomalib EfficientAd: "small" | "medium"
 
       training:
         # Normal (defect-free) images used to fit the model.
-        dataset_dir: "${ROBOWORLD_DATA_DIR}/mock/train"
-        max_epochs: 20
+        # EfficientAD trains from PNG folders, laid out as
+        #   <dataset_dir>/<part_id>/normal/*.png
+        # which is what tools/export_mock_images.py writes. The previous value
+        # pointed at data/mock/train, which no tool ever creates -- the mock
+        # dataset is data/mock/<part_id>/ and the PNG export is data/mock_images.
+        # Point this at real captures once defect-free frames have been shot.
+        dataset_dir: "${ROBOWORLD_DATA_DIR}/mock_images"
+        # EfficientAD is a distillation objective; it keeps improving well
+        # past the point the loss looks flat. 20 was a smoke-test value.
+        max_epochs: 100
         batch_size: 1
+
+        # Modified z-score above which a training frame is left out of the
+        # normalisation calibration (high side only -- a low score is a clean
+        # part, not contamination). The anchor is a high percentile, so a few
+        # bad frames drag it up and push real defects under the threshold.
+        # Measured on 64 real captures: one frame with the operator's hand in
+        # shot scored 23x the median, lifting p95 from 0.219 to 0.347 and
+        # costing 12 of 19 defects. Excluded frames are printed, not dropped
+        # silently -- they usually want deleting from the capture set too.
+        # 3.5 is the textbook value, and it was right when the normal set
+        # spanned several part faces. On a single-face set the spread
+        # collapses, MAD with it, and ordinary frames at 1.8x the median
+        # start tripping it -- 11 of 82 were excluded, which moves the
+        # anchor as much as the contamination it was meant to catch.
+        # 6.0 still isolates real contamination (the hand-in-shot frame
+        # measured z=132) without eating the distribution's own shoulder.
+        outlier_z_max: 6.0
