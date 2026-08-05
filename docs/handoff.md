@@ -50,7 +50,8 @@
 
 간격 200 mm에서 **후속 부품의 포즈(y=+0.195 m)를 발행**하던 문제를 막는 게이트다.
 후보(`Candidate`)의 **중심이 카메라 좌표계 기준 상자 안**에 있어야 선택 대상이 되고,
-상자 밖 부품만 있으면 `STATUS_NO_POSE`(= 아직 스테이션에 도착 안 함)를 낸다.
+상자 밖 부품만 있으면 선택을 거부한다.
+⚠️ 다만 이때 발행되는 status는 `STATUS_NO_POSE`가 아니라 `STATUS_NG`다 — **§10 참조**.
 
 | 파일 | 내용 |
 |---|---|
@@ -218,6 +219,7 @@ inspection / pose / pipeline 노드   ← 얇은 어댑터
 | 창 닫힘을 `getWindowProperty < 1`로만 판정 | Qt는 예외를 던짐. 예외도 "닫힘"으로 처리 |
 | 로컬 등록 부품이 출하 부품 허용치로 평가 | `locally_registered` 마커로 `--part all`에서 제외 |
 | 치수 식별이면 다중 부품도 안전하다고 가정 | 뒤 부품도 치수가 **똑같이** 맞는다. 위치 게이트(스테이션 ROI)가 별도로 필요 |
+| 문서의 status 값을 실행으로 확인 안 함 | ICD가 `NO_POSE`라 적힌 3개 경우가 실제로는 전부 `NG`였다. **파이프라인을 돌려봐야 안다** |
 
 ---
 
@@ -225,17 +227,52 @@ inspection / pose / pipeline 노드   ← 얇은 어댑터
 
 1. ~~스테이션 ROI 구현~~ ✅ 완료 (§3)
 2. 스테이션 ROI 커밋·푸시
-3. 로봇 부서 회신 확보 (§7) — 특히 대칭 불변성, 벨트 진행 방향
-4. **GPU 환경 구축** — EfficientAD·FoundationPose 공통 선행 조건.
+3. ⚠️ **부품 미검출 시 `STATUS_NG` → `STATUS_NO_POSE` 수정** (§10)
+4. 로봇 부서 회신 확보 (§7) — 특히 대칭 불변성, 벨트 진행 방향
+5. **GPU 환경 구축** — EfficientAD·FoundationPose 공통 선행 조건.
    RTX 5070은 Blackwell(sm_120)이라 지원 PyTorch 빌드 확인이 첫 관문
-5. EfficientAD 실학습 (INS-3) / Isaac ROS FoundationPose 브릿지 (POSE-4)
-6. `TopicFrameSource`(실 카메라 ROS 구독 경로) 실측 검증 — **아직 미검증**
-7. 실 카메라로 ROI 확인 — D455를 attach하고
+6. EfficientAD 실학습 (INS-3) / Isaac ROS FoundationPose 브릿지 (POSE-4)
+7. `TopicFrameSource`(실 카메라 ROS 구독 경로) 실측 검증 — **아직 미검증**
+8. 실 카메라로 ROI 확인 — D455를 attach하고
    `tools/live_view.py --inspect`로 상자가 정지 위치에 맞는지 눈으로 볼 것
 
 ---
 
-## 10. 새 세션 시작 시 붙여넣을 문장
+## 10. ⚠️ 실행으로 발견한 미해결 결함 — 부품 미검출이 `STATUS_NG`가 된다
+
+**증상**: 분할이 부품을 못 찾으면 `STATUS_NO_POSE`가 아니라 **`STATUS_NG`**가 발행된다.
+ICD §3.1 권장 동작대로면 로봇이 **존재하지 않는 부품을 불량 배출**한다.
+
+**실측** (파이프라인 직접 실행, `statistical` + `icp`):
+
+| 경우 | `seg.ok` | 실제 status | ICD 표기(수정 전) |
+|---|---|---|---|
+| 벨트에 아무것도 없음 | False | **NG** (score 1.000) | NO_POSE |
+| 치수 안 맞는 물체만 있음 | False | **NG** (score 1.000) | NO_POSE |
+| 부품이 스테이션 밖에만 있음 | False | **NG** (score 1.000) | NO_POSE |
+
+**원인**: 검사가 포즈보다 먼저 돈다. `inspection/base.py`의 `decide()`가 ROI가 비면
+score 1.0을 반환하고(“조용히 OK가 되는 것보다 낫다”는 의도), 파이프라인은 그것을
+불량으로 보고 포즈 단계를 건너뛴다.
+
+```python
+# roboworld_core/inspection/base.py
+if not roi.any():
+    return 1.0, np.zeros(anomaly_map.shape, dtype=bool)
+```
+
+**스테이션 ROI 이전부터 있던 문제다.** ROI는 같은 경로에 경우를 하나 더 추가했을 뿐.
+
+**수정 방향**: `InspectionResult`에 "부품을 찾았는가"를 실어 파이프라인이
+불량과 미검출을 구분하게 한다. `PartResult` 메시지 규격(ICD §3)은 바뀌지 않는다 —
+`status`와 `message`는 이미 있다.
+
+**결정 필요**: `is_good` 값을 무엇으로 할지. "부품 없음"은 양품도 불량도 아니다.
+로봇 부서 회신 항목으로 ICD 체크리스트에 넣어 두었다.
+
+---
+
+## 11. 새 세션 시작 시 붙여넣을 문장
 
 > `/home/shinhyoung/RoboWorld_Demo` 프로젝트를 이어서 작업한다.
 > `docs/handoff.md`를 먼저 읽고 현재 상태를 파악할 것.
