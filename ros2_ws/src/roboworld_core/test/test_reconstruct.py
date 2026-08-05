@@ -240,3 +240,50 @@ def test_pose_overlay_lands_on_the_part(cfg, flat_station):
     image, coverage = pose_overlay(frame.color, mesh, estimate.pose, frame.intrinsics)
     assert image.shape == frame.color.shape
     assert coverage > 0.0
+
+
+def test_extra_views_do_not_widen_the_mesh(recon_cfg, flat_station):
+    """Merging views must not grow the part.
+
+    The module promises extra views "average the depth noise down -- they do
+    not add geometry". That holds for the per-cell height, which is a
+    percentile, but the footprint is a union: without a consistency rule every
+    extra view can only push it outward. Measured on 10 real views of a part
+    known to be 51 mm tall, one view reconstructed 51 mm and ten reconstructed
+    59 mm.
+    """
+    from roboworld_core.reconstruct import reconstruct
+
+    pose = flat_station.sample_pose(np.random.default_rng(5))
+    views = [
+        segment_from_config(flat_station.render_frame(PART_ID, pose, seed=400 + i),
+                            recon_cfg)
+        for i in range(8)
+    ]
+    views = [v for v in views if v.ok]
+    assert len(views) >= 6
+
+    one, _ = reconstruct(views[:1], cell_size_m=0.002)
+    many, _ = reconstruct(views, cell_size_m=0.002)
+
+    growth_mm = (np.sort(many.extents)[::-1] - np.sort(one.extents)[::-1]) * 1000
+    assert growth_mm.max() < 4.0, (
+        f"8 views grew the mesh by {np.round(growth_mm, 1)} mm over 1 view"
+    )
+
+
+def test_view_consistency_can_be_disabled(recon_cfg, flat_station):
+    """min_view_fraction=0 restores the plain union, for diagnosing a bad merge."""
+    from roboworld_core.reconstruct import reconstruct
+
+    pose = flat_station.sample_pose(np.random.default_rng(7))
+    views = [
+        segment_from_config(flat_station.render_frame(PART_ID, pose, seed=500 + i),
+                            recon_cfg)
+        for i in range(6)
+    ]
+    views = [v for v in views if v.ok]
+
+    strict, _ = reconstruct(views, cell_size_m=0.002, min_view_fraction=1.0)
+    loose, _ = reconstruct(views, cell_size_m=0.002, min_view_fraction=0.0)
+    assert np.all(np.sort(strict.extents) <= np.sort(loose.extents) + 1e-9)

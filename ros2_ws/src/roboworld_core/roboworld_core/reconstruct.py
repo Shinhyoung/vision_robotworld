@@ -115,8 +115,18 @@ def _height_grid(
     cell_size: float,
     percentile: float,
     min_points_per_cell: int,
+    view_ids: np.ndarray | None = None,
+    min_views: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, tuple[float, float]]:
-    """Rasterise ``(u, v, h)`` points into a height grid."""
+    """Rasterise ``(u, v, h)`` points into a height grid.
+
+    ``min_views`` requires a cell to be seen by that many distinct views before
+    it counts as part. Pooling views is a union, so without it every extra view
+    can only push the footprint outward: measured on 10 real views of a part
+    known to be 230 x 49 x 51 mm, one view gave 226 x 54 x 51 and ten gave
+    230 x 58 x 59. The per-cell height percentile does average noise down, as
+    the module docstring says -- but the *extent* does the opposite.
+    """
     u_min, v_min = local[:, 0].min(), local[:, 1].min()
     cols = np.floor((local[:, 0] - u_min) / cell_size).astype(np.int64)
     rows = np.floor((local[:, 1] - v_min) / cell_size).astype(np.int64)
@@ -127,6 +137,8 @@ def _height_grid(
     order = np.argsort(flat_index)
     flat_sorted = flat_index[order]
     heights_sorted = local[order, 2]
+
+    views_sorted = view_ids[order] if view_ids is not None else None
 
     heights = np.full(height_cells * width_cells, np.nan)
     counts = np.zeros(height_cells * width_cells, dtype=np.int64)
@@ -140,6 +152,12 @@ def _height_grid(
     ):
         count = stop - start
         if count < min_points_per_cell:
+            continue
+        if (
+            views_sorted is not None
+            and min_views > 1
+            and len(np.unique(views_sorted[start:stop])) < min_views
+        ):
             continue
         cell = flat_sorted[start]
         heights[cell] = np.percentile(heights_sorted[start:stop], percentile)
@@ -344,6 +362,10 @@ def reconstruct(
     min_points_per_cell: int = 2,
     min_height_m: float = 0.002,
     level_top: bool = False,
+    # Fraction of the merged views a cell must appear in. Views are pooled as a
+    # union, so a cell held up by one view's noise would otherwise widen the
+    # mesh -- and the more views are captured, the wider it gets.
+    min_view_fraction: float = 0.5,
 ) -> tuple[Mesh, ReconstructionReport]:
     """Reconstruct a mesh from one or more segmented top-down views.
 
@@ -362,16 +384,19 @@ def reconstruct(
     inverse = np.linalg.inv(transform)
 
     local_points = []
+    view_ids = []
     centroids = []
     diagonals = []
-    for segmentation in usable:
+    for index, segmentation in enumerate(usable):
         points = segmentation.points
         local = points @ inverse[:3, :3].T + inverse[:3, 3]
         local_points.append(local)
+        view_ids.append(np.full(len(local), index, dtype=np.int64))
         centroids.append(local[:, :2].mean(axis=0))
         span = local[:, :2].max(axis=0) - local[:, :2].min(axis=0)
         diagonals.append(float(np.hypot(*span)))
     local = np.concatenate(local_points, axis=0)
+    views = np.concatenate(view_ids, axis=0)
 
     report = ReconstructionReport(views_merged=len(usable), points_used=len(local))
 
@@ -386,12 +411,15 @@ def reconstruct(
         )
 
     # Drop points below the plane (noise) and anything implausibly low.
-    local = local[local[:, 2] > 0.0]
+    above = local[:, 2] > 0.0
+    local, views = local[above], views[above]
     if len(local) < 100:
         raise ValueError(f"only {len(local)} points above the plane; check the setup")
 
+    min_views = max(1, int(np.ceil(min_view_fraction * len(usable))))
     heights, counts, offset = _height_grid(
-        local, cell_size_m, height_percentile, min_points_per_cell
+        local, cell_size_m, height_percentile, min_points_per_cell,
+        view_ids=views, min_views=min_views,
     )
     report.cells_filled = int(np.isfinite(heights).sum())
     heights, interpolated = _fill_holes(heights)
