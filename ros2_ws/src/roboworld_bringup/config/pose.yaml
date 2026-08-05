@@ -89,15 +89,29 @@
         # belt background into the anomaly statistics.
         station_roi:
           enabled: true
-          # Stop position. z is the belt distance; a part centre measured from
-          # depth sits ~30 mm in front of it, well inside the half extent.
-          center_m: [0.0, 0.0, 0.60]
-          # +/-150 mm laterally: 1.5x the 100 mm half length of the longest
-          # part, so a part fully at the station always fits whatever its yaw,
-          # while a neighbour at the agreed 500 mm minimum spacing never does.
+          # MEASURED on the roller conveyor with a D455 (10 frames, part centre
+          # stable to 4 mm): the part sits at [-48, -174, 682] mm. The previous
+          # value [0, 0, 0.60] was a design guess and was off by 174 mm in y --
+          # the part fell outside the box and detection was 0/10 frames.
+          #
+          # RE-MEASURE THIS WHENEVER THE CAMERA MOVES. It is a camera-frame box
+          # (see the note above), so a rig change invalidates it. The quickest
+          # check is `tools/live_view.py --source realsense --inspect`: the HUD
+          # prints how far outside the box the part is.
+          center_m: [-0.05, -0.17, 0.68]
+          # Widened from +/-[150, 150, 120] mm. Centring on the real stop
+          # position is what actually recovers detection (10/10 frames); the
+          # extra width is margin for part-to-part placement scatter.
+          #
+          # Upper bound comes from the neighbour this gate exists to reject: a
+          # follower at spacing S is excluded only while half_extent < S. At the
+          # agreed 500 mm minimum spacing +/-200 mm leaves 300 mm of margin.
+          # Note it no longer separates a 200 mm spacing -- that was a
+          # stress-test below the agreed spec, and +/-190 mm would be the limit.
+          #
           # Once the belt travel direction is known this can be tightened along
           # that axis, which is where neighbours actually appear.
-          half_extents_m: [0.15, 0.15, 0.12]
+          half_extents_m: [0.20, 0.20, 0.15]
 
       foundationpose:
         # NOTE (claude.md section 1): the public FoundationPose release is

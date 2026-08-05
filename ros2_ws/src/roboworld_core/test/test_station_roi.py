@@ -58,8 +58,15 @@ def build_belt(cfg, intrinsics, positions):
     return frame, rendered.mask
 
 
+#: Box used by the scenario tests below. Deliberately NOT the shipped one: those
+#: numbers are measured off a physical rig and move whenever the camera moves,
+#: and a mechanism test that breaks every time the rig is re-surveyed teaches
+#: nothing. ``test_shipped_config_*`` pins the shipped values instead.
+TEST_ROI = {"center_m": [0.0, 0.0, 0.60], "half_extents_m": [0.15, 0.15, 0.12]}
+
+
 def with_roi(cfg, enabled: bool, **overrides):
-    roi = {"enabled": enabled, **overrides}
+    roi = {"enabled": enabled, **TEST_ROI, **overrides}
     return cfg.merged_with({"pose": {"segmentation": {"station_roi": roi}}})
 
 
@@ -95,10 +102,45 @@ def test_rejects_a_malformed_box():
 def test_config_roundtrip_and_disable(cfg):
     roi = station_roi_from_config(cfg)
     assert roi is not None, "the shipped config should enable the station ROI"
-    assert np.allclose(roi.center_m, [0.0, 0.0, 0.60])
-    assert np.allclose(roi.half_extents_m, [0.15, 0.15, 0.12])
-
     assert station_roi_from_config(with_roi(cfg, False)) is None
+
+
+def test_shipped_config_contains_the_measured_stop_position(cfg):
+    """The shipped box must hold where the part was actually measured.
+
+    Measured on the roller conveyor with a D455, 10 frames, centre stable to
+    4 mm. This is the assertion that catches "someone tuned the box and the
+    part no longer fits" -- the exact failure that made detection 0/10.
+    """
+    roi = station_roi_from_config(cfg)
+    measured_center_m = np.array([-0.048, -0.174, 0.682])
+
+    assert roi.contains(measured_center_m), (
+        f"the part sits {roi.offset_m(measured_center_m) * 1000:.0f} mm outside "
+        f"the shipped box (centre {roi.center_m}, half {roi.half_extents_m})"
+    )
+    # Margin, not a hairline pass: placement scatter must not push it out.
+    slack = roi.half_extents_m - np.abs(measured_center_m - roi.center_m)
+    assert slack.min() > 0.05, f"only {slack.min() * 1000:.0f} mm of margin left"
+
+
+def test_shipped_box_still_rejects_a_neighbour_at_the_agreed_spacing(cfg):
+    """A follower at the agreed 500 mm minimum spacing must stay excluded.
+
+    This is the whole point of the gate, and it bounds how wide the box may be
+    made: a follower at spacing S is only excluded while half_extent < S.
+    """
+    roi = station_roi_from_config(cfg)
+    spacing_m = 0.500
+
+    assert roi.half_extents_m.max() < spacing_m, (
+        "the box is wider than the agreed part spacing -- it can no longer "
+        "separate the station part from its neighbour"
+    )
+    for axis in range(3):
+        neighbour = roi.center_m.copy()
+        neighbour[axis] += spacing_m
+        assert not roi.contains(neighbour), f"neighbour on axis {axis} is inside"
 
 
 def test_enabled_but_incomplete_config_fails_loudly():
@@ -146,7 +188,7 @@ def test_roi_selects_the_part_at_the_station(cfg, intrinsics):
     frame, labels = build_belt(
         cfg, intrinsics, [_STATION_POSITION, _STATION_POSITION + [0.0, _SPACING_M, 0.0]]
     )
-    segmentation = segment_from_config(frame, cfg, part_id=PART_ID)
+    segmentation = segment_from_config(frame, with_roi(cfg, True), part_id=PART_ID)
 
     assert segmentation.ok, segmentation.reason
     assert selected_label(segmentation, labels, 2) == 1
@@ -158,7 +200,7 @@ def test_the_neighbour_stays_visible_as_a_rejected_candidate(cfg, intrinsics):
     frame, _ = build_belt(
         cfg, intrinsics, [_STATION_POSITION, _STATION_POSITION + [0.0, _SPACING_M, 0.0]]
     )
-    segmentation = segment_from_config(frame, cfg, part_id=PART_ID)
+    segmentation = segment_from_config(frame, with_roi(cfg, True), part_id=PART_ID)
 
     assert len(segmentation.candidates) == 2
     rejected = [c for c in segmentation.candidates if not c.in_roi]
@@ -171,7 +213,7 @@ def test_the_neighbour_stays_visible_as_a_rejected_candidate(cfg, intrinsics):
 def test_an_empty_station_is_refused_even_with_a_part_in_view(cfg, intrinsics):
     """Nothing at the stop position means "not arrived yet", not "pick that one"."""
     frame, _ = build_belt(cfg, intrinsics, [_STATION_POSITION + [0.0, 0.25, 0.0]])
-    segmentation = segment_from_config(frame, cfg, part_id=PART_ID)
+    segmentation = segment_from_config(frame, with_roi(cfg, True), part_id=PART_ID)
 
     assert not segmentation.ok
     assert "station volume" in segmentation.reason
@@ -187,7 +229,7 @@ def test_pose_backend_publishes_the_station_part_not_the_neighbour(cfg, intrinsi
     )
 
     without = build_backend(with_roi(cfg, False), PART_ID, backend="icp").run(frame)
-    with_gate = build_backend(cfg, PART_ID, backend="icp").run(frame)
+    with_gate = build_backend(with_roi(cfg, True), PART_ID, backend="icp").run(frame)
 
     assert with_gate.valid, with_gate.message
     assert np.linalg.norm(with_gate.pose.position - _STATION_POSITION) < 0.010
@@ -200,7 +242,7 @@ def test_pose_backend_publishes_the_station_part_not_the_neighbour(cfg, intrinsi
 
 def test_pose_backend_reports_no_pose_when_the_station_is_empty(cfg, intrinsics):
     frame, _ = build_belt(cfg, intrinsics, [_STATION_POSITION + [0.0, 0.25, 0.0]])
-    estimate = build_backend(cfg, PART_ID, backend="icp").run(frame)
+    estimate = build_backend(with_roi(cfg, True), PART_ID, backend="icp").run(frame)
 
     assert not estimate.valid
     assert "station volume" in estimate.message
