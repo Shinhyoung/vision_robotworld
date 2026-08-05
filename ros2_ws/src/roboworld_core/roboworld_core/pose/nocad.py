@@ -23,8 +23,9 @@ class NoCadPoseBackend(PoseBackend):
 
     name = "no_cad"
 
-    def __init__(self, settings: PoseSettings, part_id: str = "") -> None:
-        super().__init__(settings)
+    def __init__(self, settings: PoseSettings, part_id: str = "",
+                 symmetry_group: list | None = None) -> None:
+        super().__init__(settings, symmetry_group)
         self.part_id = part_id
 
     def estimate(self, frame: Frame) -> tuple[Pose, float, float, str]:

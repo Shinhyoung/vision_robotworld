@@ -84,7 +84,10 @@ def build_backend(
             tools leave it off so the problem surfaces immediately.
         **kwargs: forwarded to the backend (e.g. ``ros_bridge`` for FoundationPose).
     """
+    from ..symmetry import group_for_part
+
     settings = PoseSettings.from_config(cfg)
+    kwargs.setdefault("symmetry_group", group_for_part(cfg, part_id))
     name = (backend or cfg.get("pose.backend", "icp")).lower()
 
     if name == "stub":

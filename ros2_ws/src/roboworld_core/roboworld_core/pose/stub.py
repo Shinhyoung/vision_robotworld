@@ -30,8 +30,9 @@ class StubPoseBackend(PoseBackend):
         nominal_z_m: float = 0.5725,
         fitness: float = 0.95,
         rmse_m: float = 0.001,
+        symmetry_group: list | None = None,
     ) -> None:
-        super().__init__(settings)
+        super().__init__(settings, symmetry_group)
         self.use_ground_truth = bool(use_ground_truth)
         self.nominal_z_m = float(nominal_z_m)
         self.fitness = float(fitness)

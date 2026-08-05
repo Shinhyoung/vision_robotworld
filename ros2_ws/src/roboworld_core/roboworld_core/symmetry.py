@@ -97,3 +97,60 @@ def pose_error(
         "rotation_deg": raw_deg,
         "rotation_deg_symmetry_reduced": reduced_deg,
     }
+
+
+def canonical_rotation(
+    rotation: np.ndarray,
+    group: list[np.ndarray],
+    reference: np.ndarray | None = None,
+) -> np.ndarray:
+    """Pick one representative from a rotation's symmetry-equivalent set.
+
+    A part whose shape repeats under a rotation has several equally good fits,
+    and registration picks whichever noise favours that frame. Measured on a
+    static part, 15 consecutive frames alternated between yaw +20.6 and -159.4
+    -- exactly 180 apart -- with fitness 0.97-1.00 on every one. Nothing was
+    wrong with any of them; they are the same physical placement.
+
+    A consumer cannot act on a number that jumps like that, so this collapses
+    the set to one member: the candidate whose model +x lies closest to
+    ``reference``, ties broken on +y. Deterministic, and independent of frame
+    order -- there is no filtering or history here.
+
+    **It does not resolve the ambiguity, it hides it.** The part really may be
+    end-for-end reversed and no single view can tell. That is safe only when
+    the grasp is invariant under the group -- gripping the long axis at its
+    centre, for this part. If a gripper ever keys on a specific end, this
+    function will hand it a confident wrong answer; see ICD section 6.1.
+    """
+    if len(group) <= 1:
+        return rotation
+
+    reference = np.eye(3) if reference is None else np.asarray(reference, dtype=np.float64)
+    best, best_key = None, None
+    for element in group:
+        candidate = np.asarray(rotation, dtype=np.float64) @ element
+        # Lexicographic on the first two axes: a total order, so the choice
+        # cannot depend on which element happens to be enumerated first.
+        key = (
+            round(float(candidate[:, 0] @ reference[:, 0]), 9),
+            round(float(candidate[:, 1] @ reference[:, 1]), 9),
+        )
+        if best_key is None or key > best_key:
+            best, best_key = candidate, key
+    return best
+
+
+def canonical_pose(pose, group: list[np.ndarray], reference: np.ndarray | None = None):
+    """:func:`canonical_rotation` applied to a :class:`~roboworld_core.geometry.Pose`.
+
+    Position is untouched: the symmetry acts about the part centre, which is
+    where the model frame origin sits, so every member of the set reports the
+    same point.
+    """
+    from .geometry import Pose, matrix_from_quaternion, quaternion_from_matrix
+
+    if len(group) <= 1:
+        return pose
+    rotation = canonical_rotation(matrix_from_quaternion(pose.orientation), group, reference)
+    return Pose(pose.position, quaternion_from_matrix(rotation), pose.frame_id)

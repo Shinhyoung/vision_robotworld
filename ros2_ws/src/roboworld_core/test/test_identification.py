@@ -348,3 +348,49 @@ def test_inspection_factory_does_not_refuse_on_size(cfg):
 
     assert inspection_kwargs(cfg, PART_ID)["refuse_on_size_mismatch"] is False
     assert pose_kwargs(cfg, PART_ID).get("refuse_on_size_mismatch", True) is True
+
+
+# --- symmetry canonicalisation -------------------------------------------
+def test_canonical_pose_collapses_an_end_for_end_flip():
+    """A static part must not publish a yaw that alternates by 180 degrees.
+
+    Measured on the rig: 15 consecutive frames of a part nobody touched
+    alternated between yaw +20.6 and -159.4, fitness 0.97-1.00 on every one.
+    Both fits are correct -- the shape repeats -- but a consumer cannot act on
+    a number that jumps.
+    """
+    from roboworld_core.geometry import Pose, euler_to_matrix, quaternion_from_matrix
+    from roboworld_core.symmetry import build_group, canonical_pose
+
+    group = build_group([{"axis": [0.0, 0.0, 1.0], "angles_deg": [0.0, 180.0]}])
+    assert len(group) == 2
+
+    position = np.array([0.01, -0.02, 0.65])
+    upright = euler_to_matrix(0.0, 0.0, np.radians(20.6))
+    flipped = upright @ group[1]
+
+    a = canonical_pose(Pose(position, quaternion_from_matrix(upright), "c"), group)
+    b = canonical_pose(Pose(position, quaternion_from_matrix(flipped), "c"), group)
+
+    assert np.allclose(a.orientation, b.orientation, atol=1e-9), (
+        "the two members of the same equivalence class must publish as one"
+    )
+    assert np.allclose(a.position, position), "position is untouched by symmetry"
+
+
+def test_canonical_pose_is_a_noop_without_symmetry():
+    """No declared symmetry means every orientation is distinguishable."""
+    from roboworld_core.geometry import Pose, euler_to_matrix, quaternion_from_matrix
+    from roboworld_core.symmetry import canonical_pose
+
+    pose = Pose(np.zeros(3),
+                quaternion_from_matrix(euler_to_matrix(0.1, 0.2, 0.3)), "c")
+    assert canonical_pose(pose, []) is pose
+
+
+def test_pose_backend_gets_the_parts_symmetry(cfg):
+    """The group has to reach the backend, or run() has nothing to collapse."""
+    from roboworld_core.symmetry import group_for_part
+
+    backend = build_backend(cfg, PART_ID, backend="icp")
+    assert len(backend.symmetry_group) == len(group_for_part(cfg, PART_ID))

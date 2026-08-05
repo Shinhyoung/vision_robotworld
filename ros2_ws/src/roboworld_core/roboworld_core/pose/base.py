@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..geometry import Pose
+from ..symmetry import canonical_pose
 from ..types import Frame, PoseEstimate
 
 
@@ -48,8 +49,16 @@ class PoseBackend(abc.ABC):
 
     name = "base"
 
-    def __init__(self, settings: PoseSettings) -> None:
+    def __init__(
+        self, settings: PoseSettings, symmetry_group: list | None = None
+    ) -> None:
         self.settings = settings
+        #: Rotations under which this part's shape repeats. Empty (or a single
+        #: identity) means every orientation is distinguishable, so nothing is
+        #: collapsed. Declared per part in the config -- do NOT list a rotation
+        #: the geometry can actually resolve, or a genuinely wrong orientation
+        #: gets published as a valid alternative.
+        self.symmetry_group = list(symmetry_group or [])
 
     @abc.abstractmethod
     def estimate(self, frame: Frame) -> tuple[Pose, float, float, str]:
@@ -76,6 +85,12 @@ class PoseBackend(abc.ABC):
                 message=f"{type(exc).__name__}: {exc}",
             )
         elapsed_ms = (time.perf_counter() - started) * 1000.0
+
+        # Collapse symmetry-equivalent orientations onto one representative, so
+        # a static part does not publish a yaw that alternates by 180 degrees
+        # frame to frame. Applied here rather than per backend: every backend
+        # registers a model that has the same symmetry.
+        pose = canonical_pose(pose, self.symmetry_group)
 
         valid, reason = self.validate(pose, fitness, rmse)
         return PoseEstimate(

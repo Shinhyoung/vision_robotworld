@@ -107,9 +107,10 @@ class IcpPoseBackend(PoseBackend):
         params: IcpParams | None = None,
         segmentation_kwargs: dict | None = None,
         use_open3d: bool = True,
+        symmetry_group: list | None = None,
         seed: int = 0,
     ) -> None:
-        super().__init__(settings)
+        super().__init__(settings, symmetry_group)
         self.mesh = mesh
         self.params = params or IcpParams()
         self.segmentation_kwargs = dict(segmentation_kwargs or {})

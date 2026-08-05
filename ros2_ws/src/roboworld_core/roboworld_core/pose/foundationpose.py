@@ -60,11 +60,12 @@ class FoundationPoseBackend(PoseBackend):
         track: bool = False,
         device: str = "cuda",
         python_module_path: str | Path | None = None,
+        symmetry_group: list | None = None,
         #: Injected by ``roboworld_pose`` -- called with the frame, returns
         #: ``(4x4 T_camera_model, fitness)``. Keeps ROS out of the core package.
         ros_bridge: Callable[[Frame], tuple[np.ndarray, float]] | None = None,
     ) -> None:
-        super().__init__(settings)
+        super().__init__(settings, symmetry_group)
         self.mesh = mesh
         self.mesh_path = Path(mesh_path)
         self.mode = str(mode)
