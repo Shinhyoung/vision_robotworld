@@ -228,6 +228,49 @@ def fit_plane_ransac(
     return PlaneModel(normal, offset, float(inliers.mean()))
 
 
+def refine_support_to_crowns(
+    points: np.ndarray,
+    plane: PlaneModel,
+    band_m: float = 0.035,
+    percentile: float = 95.0,
+    slab_m: float = 0.003,
+    seed: int = 0,
+) -> PlaneModel | None:
+    """Lift the support plane onto the crowns of a ribbed surface.
+
+    A roller conveyor is not a plane. The cloud holds both the roller crowns and
+    the gaps between them, and RANSAC fits that mixture, so the plane lands
+    *below* the surface the part actually rests on. Every height is then
+    measured from too low a datum.
+
+    Measured on a D455 capture of a part known to be 51 mm tall: the plane sat
+    ~20 mm low and the part read 71 mm (+39 %). Refitting to the top slice of
+    the support band reads 50 mm (-2.6 %). Widening
+    ``plane_distance_threshold_m`` does not help -- swept 3 to 30 mm, the height
+    stayed 71-73 mm, because the problem is which surface is being fitted, not
+    how tolerantly.
+
+    Returns ``None`` when there is too little support to refit, so the caller
+    keeps the plane it already has rather than trusting a fit to a handful of
+    points.
+    """
+    pts = np.asarray(points, dtype=np.float64)
+    distance = plane.signed_distance(pts)
+    # The support band: near the fitted plane, either side. The part itself
+    # stands well clear of this, so it does not vote on where the surface is.
+    band = pts[np.abs(distance) < band_m]
+    if len(band) < 200:
+        return None
+
+    band_distance = plane.signed_distance(band)
+    cut = np.percentile(band_distance, percentile) - slab_m
+    crowns = band[band_distance >= cut]
+    if len(crowns) < 50:
+        return None
+
+    return fit_plane_ransac(crowns, 120, max(slab_m, 0.002), seed=seed)
+
+
 def segment_part(
     frame: Frame,
     plane_iterations: int = 120,
@@ -241,6 +284,10 @@ def segment_part(
     expected_extents_m: np.ndarray | None = None,
     size_tolerance: float = 0.25,
     station_roi: StationRoi | None = None,
+    support_crowns: bool = False,
+    crown_percentile: float = 95.0,
+    crown_slab_m: float = 0.003,
+    crown_band_m: float = 0.035,
 ) -> Segmentation:
     """Segment the part from a frame using depth only.
 
@@ -261,6 +308,9 @@ def segment_part(
             answer "is this the one that stopped in front of the camera",
             because the next identical part on the belt matches just as well.
             ``None`` disables the check.
+        support_crowns: refit the support plane onto the crowns of a ribbed
+            surface -- see :func:`refine_support_to_crowns`. Leave off for a
+            flat belt, where the plane already is the support surface.
     """
     depth = np.asarray(frame.depth, dtype=np.float64)
     intr: CameraIntrinsics = frame.intrinsics
@@ -287,6 +337,16 @@ def segment_part(
     if plane is None:
         return Segmentation(np.zeros(depth.shape, bool), np.zeros((0, 3)), None, 0,
                             reason="no support plane found")
+
+    if support_crowns:
+        # Falls back to the plane already fitted when there is too little
+        # support to refit -- a bad datum is worse than a low one.
+        refined = refine_support_to_crowns(
+            points[sample_idx], plane, crown_band_m, crown_percentile, crown_slab_m,
+            seed=seed,
+        )
+        if refined is not None:
+            plane = refined
 
     height_above = plane.signed_distance(points)
     selected = (
@@ -399,7 +459,21 @@ def segment_from_config(
         expected_extents_m=expected,
         size_tolerance=tolerance,
         station_roi=station_roi_from_config(cfg),
+        **_crown_kwargs(section),
     )
+
+
+def _crown_kwargs(section) -> dict:
+    """Support-surface settings from a ``pose.segmentation`` section."""
+    surface = section.get("support_surface", None)
+    if not isinstance(surface, Mapping):
+        return {}
+    return {
+        "support_crowns": str(surface.get("mode", "plane")).lower() == "crowns",
+        "crown_percentile": float(surface.get("crown_percentile", 95.0)),
+        "crown_slab_m": float(surface.get("crown_slab_m", 0.003)),
+        "crown_band_m": float(surface.get("band_m", 0.035)),
+    }
 
 
 def station_roi_from_config(cfg) -> StationRoi | None:

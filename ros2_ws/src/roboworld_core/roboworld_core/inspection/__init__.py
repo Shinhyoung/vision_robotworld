@@ -87,7 +87,11 @@ def build_backend(cfg, part_id: str = "", backend: str | None = None) -> Inspect
 
 
 def _segmentation_kwargs(cfg, part_id: str = "") -> dict:
-    from ..segmentation import expected_extents_for, station_roi_from_config
+    from ..segmentation import (
+        _crown_kwargs,
+        expected_extents_for,
+        station_roi_from_config,
+    )
 
     section = cfg.section("pose.segmentation")
     camera = cfg.section("camera")
@@ -108,6 +112,7 @@ def _segmentation_kwargs(cfg, part_id: str = "") -> dict:
     }
     # Inspecting the wrong object is as bad as posing it: the anomaly statistics
     # would be computed over a hand or a neighbouring part.
+    kwargs.update(_crown_kwargs(section))
     if part_id and section.get("identify_by_size", True):
         kwargs["expected_extents_m"] = expected_extents_for(cfg, part_id)
     return kwargs

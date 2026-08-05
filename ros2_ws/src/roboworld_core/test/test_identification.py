@@ -167,3 +167,90 @@ def test_part_without_geometry_falls_back_to_largest(cfg, intrinsics):
     segmentation = segment_from_config(frame, with_identification(cfg, True),
                                        part_id="scanned")
     assert segmentation.ok, "fallback must still segment something"
+
+
+# --- support surface -----------------------------------------------------
+def _ribbed_scene(crown_z=0.600, roller_radius_m=0.030, part_height_m=0.051, seed=0):
+    """A roller conveyor with a part on it, as a point cloud.
+
+    The rollers are **cylinders**, so the visible surface is a continuum of
+    depths running from each crown down its flanks -- not two discrete levels.
+    That continuum is what defeats RANSAC: there is no dominant plane to lock
+    onto, so the fit settles somewhere down the flanks. A two-level model does
+    not reproduce it (RANSAC just picks the more numerous level).
+
+    Built directly rather than rendered: the mock renderer only makes flat
+    belts, which is exactly the case this does not cover.
+    """
+    rng = np.random.default_rng(seed)
+    n = 12000
+    x = rng.uniform(-0.30, 0.30, n)
+    y = rng.uniform(-0.20, 0.20, n)
+    # Across-roller coordinate, wrapped: each roller spans +/- the visible arc.
+    visible = roller_radius_m * 0.93
+    across = rng.uniform(-visible, visible, n)
+    relief = roller_radius_m - np.sqrt(
+        np.maximum(roller_radius_m**2 - across**2, 0.0)
+    )
+    z = crown_z + relief + rng.normal(0, 0.0008, n)
+    support = np.stack([x, y, z], axis=1)
+    # Part: a flat top face sitting ON the crowns.
+    m = 4000
+    part = np.stack([
+        rng.uniform(-0.115, 0.115, m),
+        rng.uniform(-0.0245, 0.0245, m),
+        np.full(m, crown_z - part_height_m) + rng.normal(0, 0.0008, m),
+    ], axis=1)
+    return np.concatenate([support, part]), part
+
+
+def test_ransac_plane_lands_between_the_crowns_and_the_gaps():
+    """The failure this exists to document, measured on a real conveyor.
+
+    A plane fitted to crowns-plus-gaps sits below the surface the part rests
+    on, so every height is measured from too low a datum: a part known to be
+    51 mm tall read 71 mm (+39 %) on the D455.
+    """
+    from roboworld_core.segmentation import fit_plane_ransac
+
+    cloud, part = _ribbed_scene()
+    plane = fit_plane_ransac(cloud, iterations=200, distance_threshold=0.006, seed=0)
+
+    assert plane is not None
+    measured_mm = plane.signed_distance(part).max() * 1000
+    assert measured_mm > 55.0, (
+        f"expected the naive plane to overstate 51 mm, got {measured_mm:.1f} mm"
+    )
+
+
+def test_crown_refit_recovers_the_true_height_on_a_ribbed_surface():
+    from roboworld_core.segmentation import fit_plane_ransac, refine_support_to_crowns
+
+    cloud, part = _ribbed_scene()
+    plane = fit_plane_ransac(cloud, iterations=200, distance_threshold=0.006, seed=0)
+    refined = refine_support_to_crowns(cloud, plane, seed=0)
+
+    assert refined is not None
+    measured_mm = refined.signed_distance(part).max() * 1000
+    assert abs(measured_mm - 51.0) < 4.0, f"got {measured_mm:.1f} mm, expected ~51"
+
+
+def test_crown_refit_leaves_a_flat_surface_alone():
+    """A flat belt is already the support surface; refitting must not move it."""
+    from roboworld_core.segmentation import fit_plane_ransac, refine_support_to_crowns
+
+    cloud, part = _ribbed_scene(roller_radius_m=1e-6)  # zero relief = flat
+    plane = fit_plane_ransac(cloud, iterations=200, distance_threshold=0.006, seed=0)
+    refined = refine_support_to_crowns(cloud, plane, seed=0)
+
+    before = plane.signed_distance(part).max() * 1000
+    after = (refined or plane).signed_distance(part).max() * 1000
+    assert abs(after - before) < 3.0, f"moved {after - before:+.1f} mm on a flat belt"
+
+
+def test_crown_refit_declines_when_there_is_no_support_to_fit():
+    """Too few points must return None so the caller keeps the plane it has."""
+    from roboworld_core.segmentation import PlaneModel, refine_support_to_crowns
+
+    plane = PlaneModel(np.array([0.0, 0.0, -1.0]), 0.60, 0.5)
+    assert refine_support_to_crowns(np.zeros((10, 3)), plane) is None

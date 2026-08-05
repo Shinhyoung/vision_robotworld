@@ -54,6 +54,34 @@
         # Remove the conveyor plane before registration.
         plane_ransac_iterations: 120
         plane_distance_threshold_m: 0.006
+
+        # What the part is resting on. Every height is measured from this, so
+        # putting it in the wrong place biases every height.
+        #
+        #   "plane"  - the RANSAC plane is the support surface. Correct for a
+        #              flat belt.
+        #   "crowns" - refit onto the top of the support band. For a ROLLER or
+        #              ribbed conveyor, where the cloud contains both the roller
+        #              crowns and the gaps between them: RANSAC fits that
+        #              mixture and lands below the surface the part rests on.
+        #
+        # Measured on a D455 capture of a part known to be 51 mm tall, on the
+        # roller conveyor: "plane" read 71.1 mm (+39 %), "crowns" reads 49.7 mm
+        # (-2.6 %). Widening plane_distance_threshold_m does NOT fix it --
+        # swept 3 to 30 mm, the height stayed 71-73 mm, because the problem is
+        # which surface gets fitted, not how tolerantly.
+        support_surface:
+          mode: "crowns"
+          # Percentile of the support band treated as the crowns. Tuned on that
+          # capture: 90 -> 64 mm, 95 -> 50 mm, 99 -> 43 mm. Too high and the
+          # datum climbs onto noise above the crowns.
+          crown_percentile: 95.0
+          # Thickness of the slice kept below that percentile. 3 mm; at 10 mm
+          # the gaps leak back in and the height climbs to 63 mm.
+          crown_slab_m: 0.003
+          # How far either side of the first plane fit to look for the support
+          # surface. Must clear the roller relief but stay under the part.
+          band_m: 0.035
         # Keep only points within this height band above the detected plane.
         min_height_above_plane_m: 0.008
         max_height_above_plane_m: 0.120
