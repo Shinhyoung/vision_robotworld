@@ -171,9 +171,10 @@
           half_extents_m: [0.20, 0.20, 0.15]
 
       foundationpose:
-        # NOTE (claude.md section 1): the public FoundationPose release is
-        # NON-COMMERCIAL. Demo use only; switch to the NGC commercial build
-        # before productisation.
+        # LICENCE (claude.md section 1): the public release is NON-COMMERCIAL.
+        # Decided 2026-08-05: the public build is what this demo runs on, and
+        # the switch to the NGC commercial build happens at productisation.
+        # Nothing here changes for that switch -- same weights interface.
         mesh_dir: "${ROBOWORLD_ASSETS_DIR}"
         refine_iterations: 5
         track: false              # index station is stop-and-go, not tracking
