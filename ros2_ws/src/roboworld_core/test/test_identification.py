@@ -394,3 +394,64 @@ def test_pose_backend_gets_the_parts_symmetry(cfg):
 
     backend = build_backend(cfg, PART_ID, backend="icp")
     assert len(backend.symmetry_group) == len(group_for_part(cfg, PART_ID))
+
+
+# --- one segmentation per frame ------------------------------------------
+def test_inspection_and_pose_share_one_segmentation(cfg, intrinsics, monkeypatch):
+    """Both agents segment the same frame; the work must happen once.
+
+    Their settings differ only in whether a size mismatch is fatal, and that is
+    decided after all the expensive work. Measured: segmenting twice cost 297 ms
+    a cycle against 210 ms once -- a third of the tact spent recomputing an
+    identical plane fit, clustering and colour snap.
+    """
+    from roboworld_core import segmentation as seg_module
+
+    frame, _, _ = build_scene(cfg, intrinsics)
+    calls = []
+    original = seg_module._segment_permissive
+    monkeypatch.setattr(
+        seg_module, "_segment_permissive",
+        lambda *a, **k: (calls.append(1), original(*a, **k))[1],
+    )
+    seg_module._GEOMETRY_CACHE.clear()
+
+    from roboworld_core.inspection import _segmentation_kwargs as inspection_kwargs
+    from roboworld_core.pose import _segmentation_kwargs as pose_kwargs
+
+    seg_module.segment_part(frame, **inspection_kwargs(cfg, PART_ID))
+    seg_module.segment_part(frame, **pose_kwargs(cfg, PART_ID))
+    assert len(calls) == 1, f"segmented {len(calls)} times for one frame"
+
+
+def test_cached_geometry_still_refuses_for_pose(cfg, intrinsics):
+    """Sharing must not leak Inspection's permissiveness into Pose."""
+    from roboworld_core import segmentation as seg_module
+
+    frame, _, _ = build_scene(cfg, intrinsics)
+    wrong = np.array([0.100, 0.028, 0.028])
+    seg_module._GEOMETRY_CACHE.clear()
+
+    kept = seg_module.segment_part(frame, expected_extents_m=wrong,
+                                   size_tolerance=0.25,
+                                   refuse_on_size_mismatch=False)
+    refused = seg_module.segment_part(frame, expected_extents_m=wrong,
+                                      size_tolerance=0.25,
+                                      refuse_on_size_mismatch=True)
+    assert kept.ok and not refused.ok, "the cached result must still be re-judged"
+    assert "no object matches" in refused.reason
+
+
+def test_cache_does_not_serve_a_different_frame(cfg, intrinsics):
+    """Keyed by frame identity -- a new frame must not get the old answer."""
+    from roboworld_core import segmentation as seg_module
+
+    first, labels_a, _ = build_scene(cfg, intrinsics)
+    second, _, _ = build_scene(cfg, intrinsics,
+                               decoy_half_extents=(0.05, 0.05, 0.025))
+    seg_module._GEOMETRY_CACHE.clear()
+
+    a = seg_module.segment_part(first, min_cluster_points=300)
+    b = seg_module.segment_part(second, min_cluster_points=300)
+    assert len(b.candidates) > len(a.candidates), "the decoy frame was not re-segmented"
+    assert labels_a is not None

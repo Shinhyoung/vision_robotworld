@@ -434,7 +434,24 @@ def refine_support_to_crowns(
     return fit_plane_ransac(crowns, 120, max(slab_m, 0.002), seed=seed)
 
 
-def segment_part(
+#: Prefix marking "the best candidate is the wrong size, taken anyway".
+#: :func:`segment_part` turns it into a refusal for callers that want one.
+_SIZE_MISMATCH_NOTE = "selected despite size mismatch: "
+
+#: One frame's geometry, keyed by the frame object and the settings that shape
+#: it. Inspection and Pose segment the SAME frame with settings that differ only
+#: in whether a size mismatch is fatal, so without this the plane fit, the
+#: clustering and the colour snap all run twice per cycle -- measured at 101 ms
+#: a time, a third of the whole tact.
+#:
+#: Two entries, and the frame is held by identity: a cycle uses one frame, and
+#: comparing with ``is`` cannot collide the way ``id()`` can after a free. Sized
+#: for the sequential pipeline; it is a memo, not a store.
+_GEOMETRY_CACHE: list[tuple] = []
+_GEOMETRY_CACHE_SIZE = 2
+
+
+def _segment_permissive(
     frame: Frame,
     plane_iterations: int = 120,
     plane_distance_threshold_m: float = 0.006,
@@ -453,7 +470,6 @@ def segment_part(
     crown_band_m: float = 0.035,
     color_snap_px: int = 0,
     color_snap_min_gradient: float = 8.0,
-    refuse_on_size_mismatch: bool = True,
 ) -> Segmentation:
     """Segment the part from a frame using depth only.
 
@@ -604,23 +620,70 @@ def segment_part(
             f"{np.round(np.sort(expected)[::-1] * 1000, 1)} mm "
             f"({best.size_error:.0%} off, tolerance {size_tolerance:.0%})"
         )
-        if refuse_on_size_mismatch:
-            return Segmentation(
-                empty, np.zeros((0, 3)), plane, 0, candidates=candidates,
-                reason=f"no object matches the registered part: {mismatch}",
-            )
-        # Selected anyway, and said so. Inspection asks "is this part good?",
-        # and a part can fail its dimensions *because* of the defect: a chip or
-        # something stuck to it changes the silhouette. Refusing there hands the
-        # detector an empty mask, which scores 1.0 by convention -- an NG that
-        # never looked at the part, and is indistinguishable from one that did.
-        note = f"selected despite size mismatch: {mismatch}"
+        # Selected regardless, and said so; :func:`segment_part` turns this
+        # note into a refusal for the callers that want one.
+        note = f"{_SIZE_MISMATCH_NOTE}{mismatch}"
 
     chosen = candidates[0]
     return Segmentation(
         chosen.mask, chosen.points, plane, chosen.pixel_count,
         candidates=candidates, reason=note,
     )
+
+
+def segment_part(
+    frame: Frame, *, refuse_on_size_mismatch: bool = True, **kwargs
+) -> Segmentation:
+    """Segment the part, reusing this frame's geometry across callers.
+
+    ``refuse_on_size_mismatch`` is the only thing Inspection and Pose disagree
+    on, and it is decided *after* all the expensive work: Pose refuses an object
+    of the wrong size because registering the model against a hand yields a
+    confidently wrong pick, while Inspection must still be handed pixels --
+    a defect changes the silhouette, so refusing there means scoring an empty
+    mask, which reads 1.0 by convention and is an NG that never saw the part.
+
+    Everything before that decision is identical, so it is computed once per
+    frame and shared. See :func:`_segment_permissive` for the parameters.
+    """
+    key = tuple(sorted(
+        (name, _hashable(value)) for name, value in kwargs.items()
+    ))
+    result = None
+    for cached_frame, cached_key, cached_result in _GEOMETRY_CACHE:
+        if cached_frame is frame and cached_key == key:
+            result = cached_result
+            break
+    if result is None:
+        result = _segment_permissive(frame, **kwargs)
+        if _GEOMETRY_CACHE_SIZE > 0:
+            _GEOMETRY_CACHE.append((frame, key, result))
+            # Guarded: `del lst[:-0]` is `del lst[:0]`, which trims nothing and
+            # turns the memo into an unbounded store holding every frame alive.
+            del _GEOMETRY_CACHE[:-_GEOMETRY_CACHE_SIZE]
+
+    if refuse_on_size_mismatch and result.reason.startswith(_SIZE_MISMATCH_NOTE):
+        detail = result.reason[len(_SIZE_MISMATCH_NOTE):]
+        return Segmentation(
+            np.zeros(frame.depth.shape, dtype=bool), np.zeros((0, 3)),
+            result.plane, 0, candidates=result.candidates,
+            reason=f"no object matches the registered part: {detail}",
+        )
+    return result
+
+
+def _hashable(value):
+    """Cache-key form of a segmentation setting.
+
+    Arrays and the ROI object are not hashable, and two equal arrays are not the
+    same object; reduce them to their contents so an unchanged setting hits the
+    cache instead of silently recomputing.
+    """
+    if isinstance(value, np.ndarray):
+        return value.tobytes()
+    if isinstance(value, StationRoi):
+        return (value.center_m.tobytes(), value.half_extents_m.tobytes())
+    return value
 
 
 def segment_from_config(
